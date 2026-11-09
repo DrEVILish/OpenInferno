@@ -25,6 +25,17 @@ class CliEdges(unittest.TestCase):
                         self.fail("invalid input started the daemon")
                     self.assertEqual(code, 2)
 
+    def test_hardware_offsets_rejected_before_open(self):
+        for args in (("--clock-port", "7"), ("--port-stride", "0xfffffffc"),
+                     ("--port-stride", "4097"), ("--mem-size", "16"),
+                     ("--dclk-base", "0xfffffffc"), ("--cs2k-base", "1048572"),
+                     ("--port-stride", "0x100001000"), ("--mem-size", "1048577"),
+                     ("--dclk-base", "garbage"), ("--backend", "typo")):
+            with self.subTest(args=args):
+                result = subprocess.run([BIN, *args], capture_output=True, timeout=2)
+                self.assertEqual(result.returncode, 2)
+                self.assertNotIn(b"/dev/mem", result.stderr)
+
     def test_accept_prefix_boundaries(self):
         for prefix in (0, 32):
             with self.subTest(prefix=prefix):

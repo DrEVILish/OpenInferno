@@ -48,10 +48,10 @@ int settings_apply_line(port_t *p, const char *line, int at_start)
         else port_rename(p, a);
     } else if (!strcmp(key, "rate") && sscanf(line, "%*s %d", &k) == 1) {
         if (at_start) p->fs = k == 96000 ? 96000 : 48000;
-        else port_set_rate(p, k);
+        else return port_set_rate(p, k);
     } else if (!strcmp(key, "latency") && sscanf(line, "%*s %d", &k) == 1) {
         if (at_start) p->lat_mode = k & 3;
-        else port_set_latency(p, k);
+        else return port_set_latency(p, k);
     } else if (!strcmp(key, "channels") && sscanf(line, "%*s %d", &k) == 1) {
         if (k >= 1 && k <= MAX_CH) p->channels = k;
     } else if (!strcmp(key, "txname") && sscanf(line, "%*s %d %95[^\n]", &k, a) == 2) {

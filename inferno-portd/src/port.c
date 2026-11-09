@@ -227,27 +227,41 @@ void port_apply_hw(port_t *p)
     port_wr(h, INF_CTRL, 3u | ((uint32_t)cols << 8));
 }
 
-void port_set_latency(port_t *p, int mode)
+int port_set_latency(port_t *p, int mode)
 {
-    if (mode < 0 || mode > 3) return;
-    if (mode > p->maxlat) { LOGW("latency mode %d above the build's MAXLAT %d", mode, p->maxlat); return; }
+    if (mode < 0 || mode > 3) return -1;
+    if (mode > p->maxlat) { LOGW("latency mode %d above the build's MAXLAT %d", mode, p->maxlat); return -1; }
+    int old_mode = p->lat_mode;
     p->lat_mode = mode;
+    if (tx_load_bps(p, 0, 0, 0) > TX_BUDGET_BPS) { p->lat_mode = old_mode; return -1; }
     port_wr(p->hw, INF_LATENCY, (uint32_t)mode);
     p->dirty = 1;
+    sub_retime(p);
     if (p->advertised) port_advertise(p);   /* latency_ns, the bundles' fpp */
+    return 0;
 }
 
-void port_set_rate(port_t *p, int fs)
+int port_set_rate(port_t *p, int fs)
 {
-    if (fs != 48000 && fs != 96000) return;
-    if (fs == p->fs) return;
+    if (fs != 48000 && fs != 96000) return -1;
+    if (fs == p->fs) return 0;
+    /* Unicast flows are renegotiated; retained multicast bundles must fit the new rate. */
+    port_t candidate = *p;
+    candidate.fs = fs;
+    for (int f = 0; f < NTXF; f++) if (!candidate.tx[f].multicast) candidate.tx[f].used = 0;
+    if (tx_load_bps(&candidate, 0, 0, 0) > TX_BUDGET_BPS) return -1;
     port_unadvertise(p);
+    sub_reset_rate(p);
+    port_wr(p->hw, INF_CTRL, 0);
     p->fs = fs;
-    int lim = fs > 50000 ? MAX_CH / 2 : MAX_CH;
+    int lim = MIN(p->caps_ch, fs > 50000 ? MAX_CH / 2 : MAX_CH);
     if (p->channels > lim) p->channels = lim;
+    txflows_rate_changed(p);
+    if (p->clk) dclock_set_rate(p->clk, fs);
     port_apply_hw(p);
     p->dirty = 1;
     port_advertise(p);
+    return 0;
 }
 
 void port_rename(port_t *p, const char *desk)

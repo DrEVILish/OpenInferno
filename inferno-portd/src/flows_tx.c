@@ -330,3 +330,13 @@ void txflows_tick(port_t *p, uint64_t now)
         }
     }
 }
+
+void txflows_rate_changed(port_t *p)
+{
+    for (int f = 0; f < NTXF; f++) {
+        txflow_t *t = &p->tx[f];
+        if (!t->used) continue;
+        if (!t->multicast) tx_free(p, f);
+        else if (t->programmed) { tx_disable(p, f); tx_program(p, f); }
+    }
+}

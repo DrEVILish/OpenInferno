@@ -77,7 +77,7 @@ typedef struct {
     int      req_tries;
     uint32_t src_ip;
     uint16_t src_port;
-    uint32_t latency_ns;
+    uint32_t latency_ns, peer_latency_ns;
 } rxflow_t;
 
 typedef struct {
@@ -137,8 +137,8 @@ int  port_offset_frames(const port_t *p);
 int  port_auto_fpp(const port_t *p);
 void port_apply_hw(port_t *p);                  /* mode, addresses, rate, latency, enables */
 void port_tick(port_t *p, uint64_t now);
-void port_set_latency(port_t *p, int mode);
-void port_set_rate(port_t *p, int fs);
+int  port_set_latency(port_t *p, int mode);
+int  port_set_rate(port_t *p, int fs);
 void port_rename(port_t *p, const char *desk);
 void port_rename_tx(port_t *p, int k, const char *name);
 void port_rename_rx(port_t *p, int k, const char *name);
@@ -160,6 +160,7 @@ int  cmc_handle(port_t *p, const uint8_t *req, int len, uint8_t *out, int max);
 void flowctl_init(port_t *p);
 int  flowctl_handle(port_t *p, uint32_t sip, const uint8_t *req, int len, uint8_t *out, int max);
 void txflows_tick(port_t *p, uint64_t now);
+void txflows_rate_changed(port_t *p);
 void txflows_reanchor(port_t *p);               /* after a media clock load: rewrite every w0 */
 int  txflow_create_mcast(port_t *p, int flow_index, const int16_t *ch, int nch);
 int  txflow_delete_mcast(port_t *p, int flow_index);
@@ -172,6 +173,8 @@ int  sub_subscribe(port_t *p, int k, const char *txch, const char *txhost);
 void sub_unsubscribe(port_t *p, int k);
 void sub_tick(port_t *p, uint64_t now);
 int  sub_status(const port_t *p, int k);
+void sub_retime(port_t *p);
+void sub_reset_rate(port_t *p);
 void sub_shutdown(port_t *p);                  /* stops every RX flow (the daemon exits) */
 /* flow request body (flows_control.rs request_flow), for tests */
 int  fc_build_request(const port_t *p, uint16_t seq, uint32_t rate, uint32_t bps, uint16_t fpp, const uint16_t *ch, int nch,

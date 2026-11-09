@@ -247,11 +247,107 @@ static void test_discovery_flood(void)
     teardown();
 }
 
+static void update_reply(int f)
+{
+    rxflow_t *r = &p.rx[f];
+    uint8_t frame[64] = {0}, reply[16];
+    int n = rr_make(reply, DBCP1, r->req_seq, 0x0102, 1, NULL, 0);
+    uint8_t *ip = frame + 14, *u = ip + 20;
+    put16(frame + 12, 0x0800); ip[0] = 0x45; ip[9] = 17; put16(ip + 2, (uint16_t)(28 + n));
+    put32(ip + 12, r->ctl_ip); put32(ip + 16, p.cfg_ip); put16(ip + 10, inet_csum(ip,20,0));
+    put16(u,4455); put16(u + 2,(uint16_t)p.fc_sock); put16(u + 4,(uint16_t)(8 + n)); memcpy(u + 8,reply,(size_t)n);
+    stamp_t ts = {0}; net_input(p.net,frame,42 + n,&ts);
+}
+static void test_cancel_pending(void)
+{
+    TEST("a delayed update cannot resurrect an unsubscribed or reassigned column"); setup();
+    rxflow_t *r = &p.rx[0];
+    r->used = 1; r->state = 2; r->ctl_ip = IP4(192,0,2,11); r->req_seq = 7;
+    r->nch = r->pend_nch = 1; r->bps = 3; r->col[0] = -1; r->pend_col[0] = 0; r->pend_txch[0] = 1;
+    p.sub[0].active = 1; p.sub[0].flow = p.sub[0].slot = 0;
+    sub_unsubscribe(&p,0); CHECK(r->pend_col[0] == -1);
+    update_reply(0); CHECK(r->col[0] == -1); CHECK(!p.sub[0].active);
+    r->state = 2; r->req_seq = 8; r->pend_col[0] = 0;
+    p.sub[0].active = 1; p.sub[0].flow = 1; p.sub[0].slot = 0;
+    update_reply(0); CHECK(r->col[0] == -1);
+    teardown();
+}
+static void test_latency_transitions(void)
+{
+    TEST("latency changes recompute receiver shifts in both directions"); setup();
+    rxflow_t *r = &p.rx[0]; r->used = r->state = 1; r->nch = 1; r->bps = 3; r->col[0] = 0;
+    r->peer_latency_ns = r->latency_ns = 5000000; r->shift = 216;
+    CHECK(port_set_latency(&p,3) == 0); CHECK(r->shift == 0); CHECK(tbl_read(p.hw,TBL_RX(0,3)) == 0);
+    CHECK(port_set_latency(&p,0) == 0); CHECK(r->shift == 216); CHECK(tbl_read(p.hw,TBL_RX(0,3)) == 216);
+    r->peer_latency_ns = 500000; CHECK(port_set_latency(&p,3) == 0); CHECK(r->latency_ns == 5000000);
+    CHECK(port_set_latency(&p,0) == 0); CHECK(r->latency_ns == 500000 && r->shift == 0);
+    teardown();
+    TEST("an over-budget latency change is refused without changing hardware"); setup();
+    CHECK(port_set_latency(&p,3) == 0); int16_t ch[8]; for (int i = 0; i < 8; i++) ch[i] = (int16_t)i;
+    for (int f = 0; f < 8; f++) CHECK(txflow_create_mcast(&p,f,ch,8) == 0);
+    CHECK(port_set_latency(&p,0) == -1); CHECK(p.lat_mode == 3); CHECK((port_rd(p.hw,INF_LATENCY) & 3) == 3);
+    char out[256]; p.maxlat = 0;
+    CHECK(ctl_exec(&p,"mode 3",out,sizeof(out)) == -1); CHECK(!strncmp(out,"err ",4));
+    CHECK(ctl_exec(&p,"mode junk",out,sizeof(out)) == -1);
+    teardown();
+}
+static void test_rate_transitions(void)
+{
+    TEST("rate changes stop old unicast flows and restart desired subscriptions"); setup();
+    int code, f = request(1,8,50000,&code); CHECK(f >= 0);
+    int16_t channel = 0; CHECK(txflow_create_mcast(&p,1,&channel,1) == 0);
+    p.tx[1].programmed = p.tx[1].mc_state = 1;
+    CHECK(sub_subscribe(&p,0,"01","peer") == 0);
+    p.sub[0].flow = p.sub[0].slot = 0; p.sub[0].status = SUB_RX_UNICAST;
+    p.rx[0].used = p.rx[0].state = 1; p.rx[0].nch = 1; p.rx[0].col[0] = 0; p.rx[0].bps = 3;
+    CHECK(port_set_rate(&p,96000) == 0); CHECK(p.fs == 96000 && p.channels == 32);
+    CHECK(!p.rx[0].used && p.sub[0].active && p.sub[0].flow == -1);
+    CHECK(p.sub[0].status == SUB_UNRESOLVED && p.resolve_now);
+    if (f >= 0) CHECK(!p.tx[f].used);
+    CHECK(tbl_read(p.hw,TBL_RX(0,0)) == 0);
+    CHECK(p.tx[1].used && p.tx[1].multicast && p.tx[1].programmed);
+    CHECK(tbl_read(p.hw,TBL_TX(1,0)) & 1);
+    teardown();
+    TEST("a rate change that overfills retained multicast bundles is refused atomically"); setup();
+    CHECK(port_set_latency(&p,3) == 0); int16_t ch[16]; for (int i = 0; i < 16; i++) ch[i] = (int16_t)i;
+    for (int f = 0; f < 4; f++) CHECK(txflow_create_mcast(&p,f,ch,16) == 0);
+    CHECK(port_set_rate(&p,96000) == -1); CHECK(p.fs == 48000 && port_rd(p.hw,INF_MEDIA_FS) == 48000);
+    CHECK(p.tx[0].used && p.channels == 64);
+    teardown();
+}
+static void legacy_query(net_t *n, int peer, int port, int id)
+{
+    uint8_t frame[256] = {0}; uint8_t *ip = frame + 14, *u = ip + 20, *d = u + 8;
+    int pos = 12; put16(d,(uint16_t)id); put16(d + 4,1);
+    pos += dns_put_name(d + pos,200 - pos,"_netaudio-chan._udp.local");
+    put16(d + pos,12); put16(d + pos + 2,1); pos += 4;
+    put16(frame + 12,0x0800); ip[0] = 0x45; ip[9] = 17; put16(ip + 2,(uint16_t)(28 + pos));
+    put32(ip + 12,IP4(192,0,2,peer)); put32(ip + 16,MDNS_GROUP); put16(ip + 10,inet_csum(ip,20,0));
+    put16(u,(uint16_t)port); put16(u + 2,5353); put16(u + 4,(uint16_t)(8 + pos));
+    stamp_t ts = {0}; net_input(n,frame,42 + pos,&ts);
+}
+static void test_distinct_discovery_clients(void)
+{
+    TEST("pending unicast replies retain distinct clients, ports and transaction IDs");
+    model_cfg_t cfg = {0}; cfg.phy_fd = -1;
+    hw_t *h = model_open(&cfg); uint8_t mac[6] = {2,0,0,0,0,1}; net_t *n = net_new(h,mac);
+    net_set_ip(n,IP4(192,0,2,10),IP4(255,255,255,0),0); mdns_t *m = mdns_new(n);
+    mdns_svc_t svc = {0}; strcpy(svc.inst,"01@desk"); strcpy(svc.type,"_netaudio-chan"); svc.port = 4455;
+    CHECK(mdns_add(m,&svc) >= 0); mdns_tick(m,now); now += 1000000000ull; mdns_tick(m,now);
+    mdns_stats_t before, after; mdns_get_stats(m,&before);
+    legacy_query(n,11,6000,1); legacy_query(n,12,6000,1); legacy_query(n,11,6001,1); legacy_query(n,11,6000,2);
+    legacy_query(n,11,6000,1); // exact duplicate must not consume a second slot
+    for (int i = 0; i < 100; i++) { now += 10000000ull; mdns_tick(m,now); }
+    mdns_get_stats(m,&after); CHECK(after.tx_responses - before.tx_responses == 4);
+    mdns_free(m); net_free(n); h->ops->close(h);
+}
+
 int main(void)
 {
     g_log_level = LOG_ERR; g_now_ns = vnow;
     test_reused_flow_budget(); test_handle_update_budget(); test_save_failure(); test_save_retry();
     test_mac_refresh(); test_control_backpressure();
     test_control_eof(); test_control_errors(); test_capabilities(); test_discovery_flood();
+    test_cancel_pending(); test_latency_transitions(); test_rate_transitions(); test_distinct_discovery_clients();
     return t_done("test_edges");
 }

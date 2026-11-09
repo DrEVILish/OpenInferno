@@ -17,7 +17,7 @@ SRCS    := util.c hw_devmem.c fpga_model.c pktq.c net.c mdns.c port.c arc.c flow
            ptp.c clock.c ctl.c daemon.c
 OBJS_H  := $(SRCS:%.c=build/host/%.o)
 OBJS_P  := $(SRCS:%.c=build/ppc/%.o)
-TESTS   := test_unit test_inproc test_clock test_net test_edges
+TESTS   := test_unit test_inproc test_clock test_net test_edges test_hw
 
 .PHONY: all ppc check check-unit check-ppc check-e2e check-cli clean
 all: build/host/inferno-portd
@@ -40,6 +40,12 @@ build/host/test_%.o: tests/test_%.c tests/*.h src/*.h | build/host
 	$(CC) $(WARN) $(CFLAGS) -Isrc -c -o $@ $<
 build/ppc/test_%.o: tests/test_%.c tests/*.h src/*.h | build/ppc
 	$(PPCCC) $(WARN) $(CFLAGS) -mcpu=e300c3 -Isrc -c -o $@ $<
+HW_WRAPS := $(foreach f,calloc free open close mmap munmap,-Wl,--wrap=$(f))
+build/host/test_hw: build/host/test_hw.o $(OBJS_H)
+	$(CC) -o $@ $^ $(HW_WRAPS) -lm
+build/ppc/test_hw: build/ppc/test_hw.o $(OBJS_P)
+	$(PPCCC) -static -o $@ $^ $(HW_WRAPS) -lm
+
 build/host/test_%: build/host/test_%.o $(OBJS_H)
 	$(CC) -o $@ $^ -lm
 build/ppc/test_%: build/ppc/test_%.o $(OBJS_P)

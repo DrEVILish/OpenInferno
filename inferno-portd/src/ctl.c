@@ -115,12 +115,17 @@ int ctl_exec(port_t *p, const char *line, char *out, size_t sz)
     if (!strcmp(cmd, "latency") && n >= 2) {
         double ms = atof(a);
         int m = ms <= 0.5 ? 0 : ms <= 1 ? 1 : ms <= 2 ? 2 : 3;
-        port_set_latency(p, m);
-        if (p->lat_mode != m) { outf(out, sz, "err refused by the build\n"); return -1; }
+        if (port_set_latency(p, m)) { outf(out, sz, "err refused by the build\n"); return -1; }
         outf(out, sz, "ok\n");
         return 0;
     }
-    if (!strcmp(cmd, "mode") && n >= 2) { port_set_latency(p, atoi(a)); outf(out, sz, "ok\n"); return 0; }
+    if (!strcmp(cmd, "mode") && n >= 2) {
+        char *end; long mode = strtol(a, &end, 10);
+        if (*end || mode < 0 || mode > 3 || port_set_latency(p, (int)mode)) {
+            outf(out, sz, "err refused latency mode\n"); return -1;
+        }
+        outf(out, sz, "ok\n"); return 0;
+    }
     if (!strcmp(cmd, "channels") && n >= 2) {
         int k = atoi(a), lim = p->fs > 50000 ? MAX_CH / 2 : MAX_CH;
         if (k < 1 || k > lim) { outf(out, sz, "err 1..%d\n", lim); return -1; }
@@ -135,8 +140,7 @@ int ctl_exec(port_t *p, const char *line, char *out, size_t sz)
     if (!strcmp(cmd, "rate") && n >= 2) {
         int fs = atoi(a);
         if (fs != 48000 && fs != 96000) { outf(out, sz, "err 48000 or 96000\n"); return -1; }
-        port_set_rate(p, fs);
-        if (p->clk) dclock_set_rate(p->clk, fs);
+        if (port_set_rate(p, fs)) { outf(out, sz, "err rate exceeds multicast budget\n"); return -1; }
         outf(out, sz, "ok\n");
         return 0;
     }

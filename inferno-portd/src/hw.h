@@ -39,6 +39,12 @@ static inline void     clk_wr(hw_t *h, uint32_t off, uint32_t v) { h->ops->wr(h,
 void tbl_write(hw_t *h, uint32_t word_addr, const uint32_t *w, int n);
 uint32_t tbl_read(hw_t *h, uint32_t word_addr);
 
+/* A complete aligned 32-bit access must fit without unsigned addition overflow. */
+static inline int hw_offset_valid(uint32_t addr, uint32_t size)
+{
+    return !(addr & 3u) && size >= 4 && addr <= size - 4;
+}
+
 /* /dev/mem: phys = the window's physical address, size its length */
 hw_t *hw_devmem_open(uint64_t phys, uint32_t size);
 

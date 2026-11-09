@@ -8,11 +8,13 @@ module tb_inferno_lengths;
     reg [8:0] addr = 0;
     reg [31:0] wd = 0;
     reg [7:0] data = 0;
+    reg [31:0] stamp_sec = 0;
+    wire [31:0] media_now = stamp_sec * 32'd48000 + 32'd100;
     wire [31:0] ok, rejected;
     inferno_rx dut (.clk(clk), .rst(rst), .enable(1'b1), .n_out(7'd1),
-        .media_fs(17'd48000), .media_ts(32'd100), .tbl_we(we), .tbl_waddr(addr), .tbl_wdata(wd),
+        .media_fs(17'd48000), .media_ts(media_now), .tbl_we(we), .tbl_waddr(addr), .tbl_wdata(wd),
         .tbl_raddr(addr), .tbl_rdata(), .s_tdata(data), .s_tvalid(valid), .s_tlast(last), .s_tuser(bad),
-        .claim(), .frame_strobe(1'b0), .play_ts(32'd76), .out_valid(), .out_ch(), .out_sample(),
+        .claim(), .frame_strobe(1'b0), .play_ts(media_now - 32'd24), .out_valid(), .out_ch(), .out_sample(),
         .out_frame_ok(), .packets_ok(ok), .packets_bad(rejected), .late(), .early(), .underruns(), .ts_gaps());
     reg [7:0] packet [0:127];
     integer errors = 0, checks = 0;
@@ -36,6 +38,7 @@ module tb_inferno_lengths;
             packet[34] = 8'hC3; packet[35] = 8'h51; packet[36] = 8'hC3; packet[37] = 8'h50;
             packet[38] = udp_len >> 8; packet[39] = udp_len;
             packet[42] = 2; packet[50] = 100;
+            {packet[43], packet[44], packet[45], packet[46]} = stamp_sec;
             for (i = 51; i < 75; i = i + 1) packet[i] = i;
             checksum = 0;
             for (i = 14; i < 34; i = i + 2) checksum = checksum + {packet[i], packet[i + 1]};
@@ -54,6 +57,7 @@ module tb_inferno_lengths;
             end
         end
     endtask
+    integer stamp_case;
     initial begin
         run_case(0, 75, 61, 41, 0, 1); // complete packet
         run_case(1, 80, 61, 41, 0, 1); // Ethernet padding is outside the IP packet
@@ -62,10 +66,14 @@ module tb_inferno_lengths;
         run_case(4, 75, 64, 44, 0, 0); // declared IP and UDP payload longer than arrival
         run_case(5, 74, 61, 41, 0, 0); // truncated inside a sample
         run_case(6, 75, 61, 41, 1, 0); // bad FCS
+        stamp_sec = 32'hFFFFFFFF; run_case(7,75,61,41,0,1);
+        for (stamp_case = 0; stamp_case < 32; stamp_case = stamp_case + 1) begin
+            stamp_sec = $random; run_case(8 + stamp_case,75,61,41,0,1);
+        end
         if (errors) $display("FAIL tb_inferno_lengths: %0d of %0d cases failed", errors, checks);
         else $display("PASS tb_inferno_lengths: %0d cases", checks);
         $finish;
     end
-    initial begin #1000000; $display("FAIL tb_inferno_lengths: timeout"); $finish; end
+    initial begin #4000000; $display("FAIL tb_inferno_lengths: timeout"); $finish; end
 endmodule
 `default_nettype wire

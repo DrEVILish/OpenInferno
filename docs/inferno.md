@@ -303,6 +303,42 @@ frames at 0.5 ms, ≤ 25–27 at 1 ms, ≤ 50 at 2 / 5 ms with fpp 32 (27 with f
 
 ## 8. Resources
 
+### Spartan-3 RX resource optimization (2026-11-09)
+
+Out-of-context `inferno_rx`, default parameters, Yosys 0.52 (`fee39a3284c90249e1d9684cf6944ffbbcbb8f90`),
+`xc3s` mapping; baseline RTL is commit `ac2cf9b`. These are synthesis estimates, not an ISE MAP/PAR result or a
+complete Pro1 image. The historical ECP5 and ISE totals below predate this change.
+
+| RX resource | Baseline | Optimized |
+|---|---:|---:|
+| RAMB16 blocks | 30 | 29 |
+| LUT1..LUT4 cells | 1,553 | 1,477 |
+| Estimated logic cells (Yosys) | 1,126 | 945 |
+| Flip-flops | 1,088 | 1,088 |
+| MUXF5..MUXF8 cells | 359 | 383 |
+| RAM16X1D cells | 240 | 240 |
+
+One staging bank replaces two: the preceding packet's commit consumes one sample per clock, while the next
+packet first traverses its header and then writes at most one sample per two clocks. The writer therefore
+cannot overwrite an unread staged sample. The channel maps remain double-buffered because the commit reuses
+them across frames. A dedicated back-to-back-packet test checks actual read/write overlap and all 960 output
+samples across two differently mapped flows. No channel count, sample precision, buffer latency mode, packet
+capacity or external interface was reduced.
+
+The serial seconds-times-sample-rate calculation now shifts its existing seconds register each cycle instead
+of using a variable barrel shifter. It retains the same cycle count and modulo-32-bit result; timestamp tests
+include all-one seconds and 32 pseudorandom seconds values.
+
+Reproduce the RX mapping from the repository root (run identically against the baseline and optimized RTL):
+
+```sh
+yosys -Q -T -p 'read_verilog -Irtl rtl/inferno_rx.v; synth_xilinx -family xc3s -top inferno_rx -noiopad -noclkbuf; stat'
+make sim
+```
+
+Final Spartan-3 ISE placement, routing and 50 MHz timing still need validation. The increase in dedicated mux
+cells is included above rather than treating every logic resource as improved.
+
 ### RAM per port (block RAM, ECP5 DP16KD = 18 kbit; buffers sized for the worst case, the 5 ms mode)
 
 | Memory | Size | DP16KD |

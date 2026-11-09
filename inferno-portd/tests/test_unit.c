@@ -14,6 +14,7 @@
 
 #include <math.h>
 #include <string.h>
+#include <unistd.h>
 
 static uint64_t vt = 1000000000ull;
 static uint64_t vnow(void) { return vt; }
@@ -339,6 +340,31 @@ static void test_model_regs(void)
     h->ops->close(h);
 }
 
+static void test_restored_channels(void)
+{
+    TEST("restored 96 kHz configuration respects the hardware channel limit");
+    char path[] = "/tmp/openinferno-state-XXXXXX";
+    int fd = mkstemp(path);
+    CHECK(fd >= 0);
+    if (fd < 0) return;
+    FILE *f = fdopen(fd, "w");
+    CHECK(f != NULL);
+    if (!f) { close(fd); unlink(path); return; }
+    fputs("rate 96000\nchannels 64\n", f);
+    CHECK(fclose(f) == 0);
+    static port_t p;
+    port_defaults(&p);
+    p.cfg_ip = IP4(169, 254, 11, 2);
+    snprintf(p.state_path, sizeof(p.state_path), "%s", path);
+    hw_t *h = mkmodel(0);
+    portd_opts_t o = {0}; o.log_sync = -2;
+    CHECK(portd_start(&p, h, &o) == 0);
+    CHECK(p.channels == 32);
+    CHECK(((port_rd(h, INF_CTRL) >> 8) & 127) == 32);
+    CHECK(p.advertised);
+    portd_stop(&p); h->ops->close(h); unlink(path);
+}
+
 int main(void)
 {
     g_log_level = LOG_WARN;
@@ -358,6 +384,8 @@ int main(void)
     portd_opts_t o = { 1, 0, 0, 0, 0, 0, 0, -2, 0 };
     CHECK(portd_start(&P, mkmodel(0), &o) == 0);
     CHECK(!strcmp(P.name, "MON-2") && P.devid[3] == 0xFF && P.devid[4] == 0xFE);
+    CHECK(P.advertised);
+    test_restored_channels();
     test_arc(&P);
     test_flowctl(&P);
     return t_done("test_unit");

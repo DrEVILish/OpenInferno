@@ -101,6 +101,8 @@ static int tx_add_unicast(port_t *p, const char *host, const char *flow, uint32_
     for (int f = 0; f < NTXF; f++)
         if (p->tx[f].used && !p->tx[f].multicast && p->tx[f].dst_ip == ip && p->tx[f].dst_port == port) {
             txflow_t *t = &p->tx[f];
+            double load = tx_load_bps(p, nch, fpp, bps) - flow_bps(p, t->nch, t->fpp, t->bps);
+            if (load > TX_BUDGET_BPS) { *code = FC_TOO_MANY; return -1; }
             t->nch = nch; t->fpp = fpp; t->bps = bps;
             for (int c = 0; c < MAXFCH; c++) t->ch[c] = c < nch ? ch[c] : -1;
             t->expires = g_now() + KEEPALIVE_TIMEOUT_NS;
@@ -204,6 +206,8 @@ int flowctl_handle(port_t *p, uint32_t sip, const uint8_t *req, int len, uint8_t
         int nch = get16(c + 6);
         if (nch < 1 || nch > MAXFCH || 8 + 2 * nch > clen) { code = FC_BAD_REQUEST; break; }
         txflow_t *t = &p->tx[f];
+        double load = tx_load_bps(p, nch, t->fpp, t->bps) - flow_bps(p, t->nch, t->fpp, t->bps);
+        if (load > TX_BUDGET_BPS) { code = FC_TOO_MANY; break; }
         t->nch = nch;
         for (int i = 0; i < MAXFCH; i++) {
             uint16_t id = i < nch ? get16(c + 8 + 2 * i) : 0;
@@ -298,7 +302,11 @@ void txflows_tick(port_t *p, uint64_t now)
                 tx_free(p, f);
                 continue;
             }
-            if (!t->programmed && net_mac_of(p->net, t->dst_ip, t->mac)) tx_program(p, f);
+            uint8_t mac[6];
+            if (net_mac_of(p->net, t->dst_ip, mac) && (!t->programmed || memcmp(mac, t->mac, sizeof(mac)))) {
+                memcpy(t->mac, mac, sizeof(mac));
+                tx_program(p, f);
+            }
             continue;
         }
         if (t->mc_state == 0 && net_ready(p->net)) {

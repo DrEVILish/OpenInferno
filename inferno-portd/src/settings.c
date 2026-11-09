@@ -30,7 +30,9 @@ int settings_save(port_t *p)
         for (int c = 0; c < t->nch; c++) fprintf(f, "%c%d", c ? ',' : ' ', t->ch[c] + 1);
         fprintf(f, "\n");
     }
-    fclose(f);
+    int failed = ferror(f);
+    if (fclose(f)) failed = 1;
+    if (failed) { LOGW("cannot finish %s", tmp); remove(tmp); return -1; }
     if (rename(tmp, p->state_path)) { LOGW("cannot replace %s", p->state_path); return -1; }
     return 0;
 }
@@ -58,7 +60,7 @@ int settings_apply_line(port_t *p, const char *line, int at_start)
     } else if (!strcmp(key, "rxname") && sscanf(line, "%*s %d %95[^\n]", &k, a) == 2) {
         if (k >= 1 && k <= MAX_CH) sanitize_chname(a, p->rxname[k - 1], sizeof(p->rxname[0]));
     } else if (!strcmp(key, "sub") && sscanf(line, "%*s %d %95[^@]@%95s", &k, a, b) == 3) {
-        sub_subscribe(p, k - 1, a, b);
+        return sub_subscribe(p, k - 1, a, b);
     } else if (!strcmp(key, "mcast") && sscanf(line, "%*s %d %95s", &k, a) == 2) {
         int16_t ch[MAXFCH];
         int n = 0;
@@ -68,7 +70,7 @@ int settings_apply_line(port_t *p, const char *line, int at_start)
             if (!c) break;
             s = c + 1;
         }
-        txflow_create_mcast(p, k - 1, ch, n);
+        return txflow_create_mcast(p, k - 1, ch, n);
     } else return -1;
     return 0;
 }

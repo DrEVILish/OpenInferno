@@ -25,6 +25,7 @@
 #include "util.h"
 
 #include <poll.h>
+#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,28 +42,44 @@ static uint32_t num(const char *s) { return (uint32_t)strtoul(s, NULL, 0); }
 /* inferno-portd ctl <socket> <command ...>: one command to a running daemon, its answer to stdout */
 static int ctl_client(const char *path, int argc, char **argv)
 {
+    char line[1024];
+    size_t used = 0;
+    for (int i = 0; i < argc; i++) {
+        size_t len = strlen(argv[i]);
+        if (used >= sizeof(line) - 1 || len > sizeof(line) - used - 2) { fprintf(stderr, "control command too long\n"); return 2; }
+        memcpy(line + used, argv[i], len); used += len;
+        line[used++] = i + 1 < argc ? ' ' : '\n';
+    }
+    line[used] = 0;
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     struct sockaddr_un sa;
     memset(&sa, 0, sizeof(sa));
     sa.sun_family = AF_UNIX;
+    if (strlen(path) >= sizeof(sa.sun_path)) { if (fd >= 0) close(fd); return 2; }
     snprintf(sa.sun_path, sizeof(sa.sun_path), "%s", path);
-    if (fd < 0 || connect(fd, (struct sockaddr *)&sa, sizeof(sa))) { fprintf(stderr, "cannot connect to %s\n", path); return 1; }
-    char line[1024] = "";
-    for (int i = 0; i < argc; i++) { strncat(line, argv[i], sizeof(line) - strlen(line) - 2); if (i + 1 < argc) strcat(line, " "); }
-    strcat(line, "\n");
-    if (write(fd, line, strlen(line)) < 0) return 1;
-    char buf[16384];
+    if (fd < 0 || connect(fd, (struct sockaddr *)&sa, sizeof(sa))) {
+        fprintf(stderr, "cannot connect to %s\n", path); if (fd >= 0) close(fd); return 1;
+    }
+    for (size_t sent = 0; sent < used;) {
+        ssize_t w = send(fd, line + sent, used - sent, MSG_NOSIGNAL);
+        if (w < 0 && errno == EINTR) continue;
+        if (w <= 0) { close(fd); return 1; }
+        sent += (size_t)w;
+    }
+    char buf[16384] = "";
     size_t n = 0;
-    for (;;) {
+    int complete = 0, failed = 0;
+    while (n < sizeof(buf) - 1) {
         ssize_t r = read(fd, buf + n, sizeof(buf) - 1 - n);
+        if (r < 0 && errno == EINTR) continue;
         if (r <= 0) break;
-        n += (size_t)r;
-        buf[n] = 0;
-        if (strstr(buf, "ok\n") == buf + n - 3 || strstr(buf, "err ")) break;
+        n += (size_t)r; buf[n] = 0;
+        if (strstr(buf, "err ")) { failed = 1; complete = 1; break; }
+        if (n >= 3 && !memcmp(buf + n - 3, "ok\n", 3)) { complete = 1; break; }
     }
     fputs(buf, stdout);
     close(fd);
-    return strstr(buf, "err ") ? 1 : 0;
+    return !complete || failed ? 1 : 0;
 }
 
 int main(int argc, char **argv)
@@ -90,7 +107,8 @@ int main(int argc, char **argv)
             int bits = 16;
             if (sscanf(v, "%31[0-9.]/%d,%31s", ip, &bits, gw) < 2) sscanf(v, "%31[0-9.],%31s", ip, gw);
             if (parse_ip(ip, &p->cfg_ip)) { fprintf(stderr, "bad --ip\n"); return 2; }
-            p->cfg_mask = bits <= 0 ? 0 : 0xFFFFFFFFu << (32 - bits);
+            if (bits < 0 || bits > 32) { fprintf(stderr, "bad --ip prefix (0..32)\n"); return 2; }
+            p->cfg_mask = bits == 0 ? 0 : 0xFFFFFFFFu << (32 - bits);
             if (gw[0]) parse_ip(gw, &p->cfg_gw);
         } else if (ARG("--backend")) model = !strcmp(v, "model");
         else if (ARG("--mem-base")) mem_base = strtoull(v, NULL, 0);

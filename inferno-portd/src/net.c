@@ -317,6 +317,10 @@ static void udp_input(net_t *n, uint32_t sip, uint32_t dip, const uint8_t *u, in
     if (len < 8) return;
     uint16_t sport = get16(u), dport = get16(u + 2), ulen = get16(u + 4);
     if (ulen < 8 || ulen > len) return;
+    if (get16(u + 6)) {
+        uint32_t ps = (sip >> 16) + (sip & 0xFFFF) + (dip >> 16) + (dip & 0xFFFF) + 17u + ulen;
+        if (inet_csum(u, ulen, ps)) return;
+    }
     n->st.udp_rx++;
     for (int i = 0; i < NSOCK; i++)
         if (n->s[i].cb && n->s[i].port == dport) { n->s[i].cb(n->s[i].ctx, sip, sport, dip, dport, u + 8, ulen - 8, ts); return; }
@@ -364,7 +368,7 @@ void net_input(net_t *n, const uint8_t *f, int len, const stamp_t *ts)
     int ihl = (ip[0] & 15) * 4;
     if ((ip[0] >> 4) != 4 || ihl < 20 || 14 + ihl > len) return;
     int tot = get16(ip + 2);
-    if (tot < ihl || 14 + tot > len) return;
+    if (tot < ihl || tot > 1500 || 14 + tot > len) return;
     if (get16(ip + 6) & 0x3FFF) return;   /* fragments */
     if (inet_csum(ip, ihl, 0) != 0) return;
     uint32_t sip = get32(ip + 12), dip = get32(ip + 16);

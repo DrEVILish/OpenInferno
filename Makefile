@@ -1,12 +1,15 @@
 # Standalone Inferno media path and control-plane checks.
 .DEFAULT_GOAL := check
+.DELETE_ON_ERROR:
 PY ?= python3 -I
 TASKSET ?= nice -n 10
 B := build
 RTL := rtl/rmii_tx.v rtl/rmii_rx.v rtl/inferno_tx.v rtl/inferno_rx.v rtl/cpu_pktq.v
 CAP := 48_8_0 48_8_1 48_8_2 48_8_3 64_16_0 64_16_1 64_16_2 64_16_3 64_32_0 32_16_3_96k
-.PHONY: check sim xcheck control clean
-check: xcheck control sim
+.PHONY: check sim xcheck control cli clean
+check: xcheck control cli sim
+cli:
+	$(MAKE) -C inferno-portd check-cli
 control:
 	$(MAKE) -C inferno-portd check-unit
 $(B):
@@ -20,7 +23,10 @@ $(B)/%.log: $(B)/%.vvp
 	vvp -n $< > $@
 	@cat $@
 	@grep -q '^PASS' $@ && ! grep -q '^FAIL' $@
-sim: $(B)/tb_inferno.log $(foreach c,$(CAP),$(B)/tb_infcap_$(c).log)
+EXTRA_BENCHES := tb_inferno_lengths tb_rmii tb_ptp tb_ptp_servo tb_fs_phase
+$(addprefix $(B)/,$(addsuffix .vvp,$(EXTRA_BENCHES))): $(B)/%.vvp: tb/%.v $(wildcard rtl/*) | $(B)
+	iverilog -g2005 -Irtl -Itb -s $* -o $@ $< $(RTL) rtl/ptp_clock.v rtl/fs_phase.v
+sim: $(addprefix $(B)/,$(addsuffix .log,$(EXTRA_BENCHES))) $(B)/tb_inferno.log $(foreach c,$(CAP),$(B)/tb_infcap_$(c).log)
 clean:
 	rm -rf build
 	$(MAKE) -C inferno-portd clean

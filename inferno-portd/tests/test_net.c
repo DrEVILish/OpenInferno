@@ -9,6 +9,7 @@ static void on_udp(void *ctx, uint32_t sip, uint16_t sport, uint32_t dip, uint16
                    const uint8_t *d, int len, const stamp_t *ts)
 {
     (void)ctx; (void)sip; (void)sport; (void)dip; (void)dport; (void)d; (void)len; (void)ts;
+    CHECK(len == 3 && !memcmp(d, "abc", 3));
     received++;
 }
 
@@ -50,8 +51,35 @@ int main(void)
     net_input(n, f, 45, &ts); CHECK(received == 1);
     u[8] ^= 1;
     net_input(n, f, 45, &ts); CHECK(received == 1);
+    u[8] ^= 1;
     put16(u + 6, 0);
     net_input(n, f, 45, &ts); CHECK(received == 2);
+    TEST("malformed IPv4/UDP lengths, header checksum and fragments never reach a callback");
+    uint8_t good[45]; memcpy(good, f, sizeof(good));
+    for (int i = 0; i < 9; i++) {
+        memcpy(f, good, sizeof(good));
+        int len = 45;
+        switch (i) {
+        case 0: len = 33; break;                         /* incomplete IP header */
+        case 1: put16(f + 16, 19); break;               /* total below IHL */
+        case 2: len = 44; break;                       /* IP payload missing */
+        case 3: f[14] = 0x44; break;                   /* IHL below minimum */
+        case 4: f[14] = 0x4f; break;                   /* options missing */
+        case 5: f[22] ^= 1; break;                     /* bad IP checksum */
+        case 6: put16(f + 20, 0x2000); break;          /* more fragments */
+        case 7: put16(f + 38, 7); break;               /* UDP length below header */
+        case 8: put16(f + 38, 12); break;              /* UDP length beyond IP payload */
+        }
+        if (i == 1 || i == 3 || i == 6) {
+            put16(f + 24, 0); put16(f + 24, inet_csum(f + 14, 20, 0));
+        }
+        net_input(n, f, len, &ts); CHECKF(received == 2, "malformed case %d dispatched", i);
+    }
+    TEST("IPv4 options do not shift the UDP callback payload incorrectly");
+    ipv4(f, 49, 17); f[14] = 0x46;
+    memcpy(f + 38, good + 34, 11);
+    put16(f + 24, 0); put16(f + 24, inet_csum(f + 14, 24, 0));
+    net_input(n, f, 49, &ts); CHECK(received == 3);
     net_free(n); h->ops->close(h);
     return t_done("test_net");
 }

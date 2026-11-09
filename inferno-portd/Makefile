@@ -17,9 +17,9 @@ SRCS    := util.c hw_devmem.c fpga_model.c pktq.c net.c mdns.c port.c arc.c flow
            ptp.c clock.c ctl.c daemon.c
 OBJS_H  := $(SRCS:%.c=build/host/%.o)
 OBJS_P  := $(SRCS:%.c=build/ppc/%.o)
-TESTS   := test_unit test_inproc test_clock test_net
+TESTS   := test_unit test_inproc test_clock test_net test_edges
 
-.PHONY: all ppc check check-unit check-ppc check-e2e clean
+.PHONY: all ppc check check-unit check-ppc check-e2e check-cli clean
 all: build/host/inferno-portd
 
 build/host build/ppc:
@@ -46,7 +46,7 @@ build/ppc/test_%: build/ppc/test_%.o $(OBJS_P)
 	$(PPCCC) -static -o $@ $^ -lm
 
 check-unit: $(TESTS:%=build/host/%)
-	@for t in $(TESTS); do build/host/$$t || exit 1; done
+	@failed=0; for t in $(TESTS); do build/host/$$t || failed=1; done; exit $$failed
 
 check-ppc: $(TESTS:%=build/ppc/%)
 	@for t in $(TESTS); do $(QEMU) build/ppc/$$t || exit 1; done
@@ -54,7 +54,10 @@ check-ppc: $(TESTS:%=build/ppc/%)
 check-e2e: build/host/inferno-portd
 	sh tests/e2e.sh build/host/inferno-portd
 
-check: check-unit check-e2e
+check-cli: build/host/inferno-portd
+	python3 -I tests/test_cli.py $(abspath build/host/inferno-portd)
+
+check: check-unit check-cli check-e2e
 
 clean:
 	rm -rf build

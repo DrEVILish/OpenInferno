@@ -40,11 +40,12 @@ build/host/test_%.o: tests/test_%.c tests/*.h src/*.h | build/host
 	$(CC) $(WARN) $(CFLAGS) -Isrc -c -o $@ $<
 build/ppc/test_%.o: tests/test_%.c tests/*.h src/*.h | build/ppc
 	$(PPCCC) $(WARN) $(CFLAGS) -mcpu=e300c3 -Isrc -c -o $@ $<
-HW_WRAPS := $(foreach f,calloc free open close mmap munmap,-Wl,--wrap=$(f))
-build/host/test_hw: build/host/test_hw.o $(OBJS_H)
-	$(CC) -o $@ $^ $(HW_WRAPS) -lm
-build/ppc/test_hw: build/ppc/test_hw.o $(OBJS_P)
-	$(PPCCC) -static -o $@ $^ $(HW_WRAPS) -lm
+# The hardware test includes a backend with local mocks; libc is never interposed.
+build/host/test_hw.o build/ppc/test_hw.o: src/hw_devmem.c
+build/host/test_hw: build/host/test_hw.o build/host/util.o
+	$(CC) -o $@ $^ -lm
+build/ppc/test_hw: build/ppc/test_hw.o build/ppc/util.o
+	$(PPCCC) -static -o $@ $^ -lm
 
 build/host/test_%: build/host/test_%.o $(OBJS_H)
 	$(CC) -o $@ $^ -lm

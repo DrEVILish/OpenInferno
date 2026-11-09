@@ -174,7 +174,10 @@ module inferno_rx #(
     reg  [5:0]  sc;                    // channel of the sample being assembled
     reg  [9:0]  nfr;                   // whole frames staged
     reg         sbank;
-    reg  [23:0] stage [0:2*MAX_SMP-1];
+    // Commit reads one sample per clock. A new packet starts staging only after its
+    // header, then writes at most one sample per two clocks, so it cannot overtake
+    // the previous commit. Maps remain double-buffered because they are reused.
+    reg  [23:0] stage [0:MAX_SMP-1];
     reg         fin;                   // the frame ended last clock: judge it
     reg         fin_bad;
     wire [16:0] pay_end = 17'd34 + {1'b0, p_ulen};  // byte index after the UDP payload (excludes Ethernet padding)
@@ -199,7 +202,7 @@ module inferno_rx #(
         for (ii = 0; ii < 2 * NF; ii = ii + 1) tags[ii] = {(NFLOW+16){1'b0}};
         for (ii = 0; ii < MAX_CH; ii = ii + 1) owner[ii] = {(FW+1){1'b0}};
     end
-    always @(posedge clk) stage_q <= stage[{cbank, ck[SW-1:0]}];
+    always @(posedge clk) stage_q <= stage[ck[SW-1:0]];
     always @(posedge clk) if (cwe) jbuf[cwa] <= stage_q;
 
     // packet media time, its slot time and its latency: registered (stable long before the frame ends)
@@ -288,7 +291,7 @@ module inferno_rx #(
                     if ({1'b0, sb} + 3'd1 == f_bps) begin
                         sb <= 2'd0;
                         if (nsmp < MAX_SMP)
-                            stage[{sbank, nsmp[SW-1:0]}] <= (f_bps == 3'd2) ? {acc[7:0], s_tdata, 8'h00}
+                            stage[nsmp[SW-1:0]] <= (f_bps == 3'd2) ? {acc[7:0], s_tdata, 8'h00}
                                                           : (f_bps == 3'd3) ? {acc[15:0], s_tdata} : acc;
                         nsmp <= nsmp + 1'b1;
                         if (sc + 6'd1 >= f_nch) begin sc <= 6'd0; nfr <= nfr + 10'd1; end else sc <= sc + 6'd1;
@@ -320,7 +323,8 @@ module inferno_rx #(
                 ld <= (ld == 5'd12) ? 5'd16 : ld + 5'd1;
             end
             if (mul_on) begin
-                if (media_fs[mul_i]) mul_acc <= mul_acc + (p_sec << mul_i);
+                if (media_fs[mul_i]) mul_acc <= mul_acc + p_sec;
+                p_sec <= {p_sec[30:0], 1'b0};
                 mul_i <= mul_i + 5'd1;
                 if (mul_i == 5'd16) mul_on <= 1'b0;
             end

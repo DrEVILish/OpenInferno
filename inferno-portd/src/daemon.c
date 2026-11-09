@@ -36,6 +36,9 @@ int portd_start(port_t *p, hw_t *hw, const portd_opts_t *o)
     p->mdns = mdns_new(p->net);
     port_set_identity(p);
     if (p->state_path[0]) settings_load(p);
+    int limit = p->fs > 50000 ? MAX_CH / 2 : MAX_CH;
+    limit = MIN(limit, p->caps_ch);
+    if (p->channels > limit) p->channels = limit;
     port_set_identity(p);
     snprintf(g_log_tag, sizeof(g_log_tag), "%s", p->name);
     arc_init(p);
@@ -60,6 +63,10 @@ int portd_start(port_t *p, hw_t *hw, const portd_opts_t *o)
     ptp_cfg_t pc = { o->ptp_role, o->log_sync, o->stratum ? o->stratum : 4, (int16_t)0xF060, o->ptp_steer };
     p->ptp = ptp_new(p->net, p->clk, p->mac, &pc);
     port_apply_hw(p);
+    if (net_ready(p->net)) {
+        info_init(p);
+        port_advertise(p);
+    }
     LOGI("port %d up: %d channels each way at %d Hz, latency %u ns, PTP role %d%s", p->n + 1, p->channels, p->fs, port_latency_ns(p),
          o->ptp_role, o->clock_owner ? ", desk clock owner" : "");
     return 0;

@@ -152,7 +152,11 @@ static void on_fc_reply(void *ctx, uint32_t sip, uint16_t sport, uint32_t dip, u
         } else if (op == 0x0102 && r->state == 2) {
             if (code == 1) {
                 r->nch = r->pend_nch;
-                for (int c = 0; c < r->nch; c++) { r->txch[c] = r->pend_txch[c]; r->col[c] = r->pend_col[c]; }
+                for (int c = 0; c < r->nch; c++) {
+                    int k = r->pend_col[c];
+                    r->txch[c] = r->pend_txch[c];
+                    r->col[c] = k >= 0 && k < p->channels && p->sub[k].active && p->sub[k].flow == f && p->sub[k].slot == c ? k : -1;
+                }
                 rx_program(p, f);
                 for (int k = 0; k < MAX_CH; k++) if (p->sub[k].active && p->sub[k].flow == f && p->sub[k].status < SUB_IN_PROGRESS) set_status(p, k, SUB_IN_PROGRESS);
             } else {
@@ -221,6 +225,7 @@ void sub_unsubscribe(port_t *p, int k)
     sub_t *s = &p->sub[k];
     if (s->flow >= 0) {
         rxflow_t *r = &p->rx[s->flow];
+        for (int c = 0; c < r->pend_nch; c++) if (r->pend_col[c] == k) r->pend_col[c] = -1;
         if (s->slot >= 0 && s->slot < MAXFCH && r->col[s->slot] == k) { r->col[s->slot] = -1; if (r->state) rx_program(p, s->flow); }
     }
     memset(s, 0, sizeof(*s));
@@ -316,7 +321,8 @@ static void attach_mcast(port_t *p, int k, const advch_t *a)
         scopy(r->host, sizeof(r->host), s->txhost);
         r->group = grp; r->gport = (uint16_t)port; r->bundle_id = a->bundle;
         r->nch = (int)nch; r->bps = (int)enc / 8;
-        r->latency_ns = (uint32_t)MAX((uint32_t)lat, port_latency_ns(p));
+        r->peer_latency_ns = (uint32_t)lat;
+        r->latency_ns = MAX(r->peer_latency_ns, port_latency_ns(p));
         r->shift = shift_frames(p, (uint32_t)lat);
         for (int c = 0; c < MAXFCH; c++) { r->col[c] = -1; r->txch[c] = 0; }
         r->created = g_now();
@@ -435,7 +441,8 @@ static void resolve(port_t *p, uint64_t now)
         if (fpp < a0->fpp_min) fpp = a0->fpp_min;
         r->fpp = fpp;
         r->per = per;
-        r->latency_ns = MAX(a0->latency_ns, port_latency_ns(p));
+        r->peer_latency_ns = a0->latency_ns;
+        r->latency_ns = MAX(r->peer_latency_ns, port_latency_ns(p));
         r->shift = shift_frames(p, a0->latency_ns);
         r->created = now;
         r->req_tries = 1;
@@ -514,4 +521,25 @@ void sub_tick(port_t *p, uint64_t now)
 void sub_shutdown(port_t *p)
 {
     for (int f = 0; f < NRXF; f++) rx_free(p, f, 1);
+}
+
+void sub_retime(port_t *p)
+{
+    for (int f = 0; f < NRXF; f++) {
+        rxflow_t *r = &p->rx[f];
+        if (!r->used) continue;
+        r->shift = shift_frames(p, r->peer_latency_ns);
+        r->latency_ns = MAX(r->peer_latency_ns, port_latency_ns(p));
+        if (r->state) rx_program(p, f);
+    }
+}
+
+void sub_reset_rate(port_t *p)
+{
+    sub_shutdown(p);
+    for (int k = 0; k < MAX_CH; k++) if (p->sub[k].active) {
+        p->sub[k].next_try = p->sub[k].ready_at = 0;
+        set_status(p, k, SUB_UNRESOLVED);
+    }
+    p->resolve_now = 1;
 }

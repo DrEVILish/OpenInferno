@@ -20,13 +20,13 @@ typedef struct {
 static uint32_t dm_rd(hw_t *h, uint32_t a)
 {
     devmem_t *d = h->priv;
-    if (a + 4 > d->size) return 0;
+    if (!hw_offset_valid(a, d->size)) return 0;
     return d->base[a >> 2];
 }
 static void dm_wr(hw_t *h, uint32_t a, uint32_t v)
 {
     devmem_t *d = h->priv;
-    if (a + 4 > d->size) return;
+    if (!hw_offset_valid(a, d->size)) return;
     d->base[a >> 2] = v;
     __sync_synchronize();   /* the window is cache-inhibited and guarded; keep the order of the bus beats */
 }
@@ -44,12 +44,17 @@ static const struct hw_ops dm_ops = { dm_rd, dm_wr, dm_fd, dm_service, dm_close 
 
 hw_t *hw_devmem_open(uint64_t phys, uint32_t size)
 {
-    int fd = open("/dev/mem", O_RDWR | O_SYNC);
-    if (fd < 0) { LOGE("/dev/mem: cannot open"); return NULL; }
-    void *p = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)phys);
-    if (p == MAP_FAILED) { LOGE("/dev/mem: cannot map 0x%llx", (unsigned long long)phys); close(fd); return NULL; }
+    if (size < 4 || (size & 3u)) { LOGE("invalid MMIO window size"); return NULL; }
     devmem_t *d = calloc(1, sizeof(*d));
     hw_t *h = calloc(1, sizeof(*h));
+    if (!d || !h) { LOGE("cannot allocate MMIO backend"); free(d); free(h); return NULL; }
+    int fd = open("/dev/mem", O_RDWR | O_SYNC);
+    if (fd < 0) { LOGE("/dev/mem: cannot open"); free(d); free(h); return NULL; }
+    void *p = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)phys);
+    if (p == MAP_FAILED) {
+        LOGE("/dev/mem: cannot map 0x%llx", (unsigned long long)phys);
+        close(fd); free(d); free(h); return NULL;
+    }
     d->base = p; d->size = size; d->fd = fd;
     h->ops = &dm_ops; h->priv = d;
     return h;

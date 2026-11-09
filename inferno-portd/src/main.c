@@ -37,7 +37,14 @@ extern int g_adv_nchan;
 static volatile sig_atomic_t g_stop;
 static void on_sig(int s) { (void)s; g_stop = 1; }
 
-static uint32_t num(const char *s) { return (uint32_t)strtoul(s, NULL, 0); }
+static int bad_number;
+static uint32_t num(const char *s)
+{
+    char *end; errno = 0;
+    unsigned long long value = strtoull(s, &end, 0);
+    if (errno || end == s || *end || *s == '-' || value > UINT32_MAX) bad_number = 1;
+    return (uint32_t)value;
+}
 
 /* inferno-portd ctl <socket> <command ...>: one command to a running daemon, its answer to stdout */
 static int ctl_client(const char *path, int argc, char **argv)
@@ -110,7 +117,10 @@ int main(int argc, char **argv)
             if (bits < 0 || bits > 32) { fprintf(stderr, "bad --ip prefix (0..32)\n"); return 2; }
             p->cfg_mask = bits == 0 ? 0 : 0xFFFFFFFFu << (32 - bits);
             if (gw[0]) parse_ip(gw, &p->cfg_gw);
-        } else if (ARG("--backend")) model = !strcmp(v, "model");
+        } else if (ARG("--backend")) {
+            if (strcmp(v,"model") && strcmp(v,"devmem")) { fprintf(stderr,"bad --backend\n"); return 2; }
+            model = !strcmp(v,"model");
+        }
         else if (ARG("--mem-base")) mem_base = strtoull(v, NULL, 0);
         else if (ARG("--mem-size")) mem_size = num(v);
         else if (ARG("--port-stride")) stride = num(v);
@@ -141,6 +151,7 @@ int main(int argc, char **argv)
         else { fprintf(stderr, "inferno-portd: unknown option %s (see the head of main.c)\n", a); return 2; }
 #undef ARG
     }
+    if (bad_number) { fprintf(stderr, "invalid unsigned register value\n"); return 2; }
     if (portn < 1 || portn > 6) { fprintf(stderr, "--port 1..6\n"); return 2; }
     p->n = portn - 1;
     if (!have_mac) p->mac[5] = (uint8_t)portn;
@@ -150,7 +161,16 @@ int main(int argc, char **argv)
     rnd_seed(mono_ns() ^ ((uint64_t)p->mac[5] << 40) ^ ((uint64_t)getpid() << 20));
 
     hw_t *hw;
-    uint32_t pbase = stride * (uint32_t)portn, cbase = stride * (uint32_t)clock_port;
+    uint64_t port_offset = (uint64_t)stride * (unsigned)portn;
+    uint64_t clock_offset = (uint64_t)stride * (unsigned)clock_port;
+    if (!model && (clock_port < 1 || clock_port > 6 || stride < 0x400 || (stride & 3u)
+        || port_offset > UINT32_MAX - 0x400u || clock_offset > UINT32_MAX - 0x400u
+        || mem_size < 0x400 || (mem_size & 3u) || port_offset + 0x400 > mem_size || clock_offset + 0x400 > mem_size
+        || (dclk != UINT32_MAX && (!hw_offset_valid(dclk, mem_size) || (uint64_t)dclk + 0x100 > mem_size))
+        || (cs2k != UINT32_MAX && (!hw_offset_valid(cs2k, mem_size) || (uint64_t)cs2k + 0x100 > mem_size)))) {
+        fprintf(stderr, "invalid hardware window or block offsets\n"); return 2;
+    }
+    uint32_t pbase = (uint32_t)port_offset, cbase = (uint32_t)clock_offset;
     if (model) {
         model_cfg_t mc;
         memset(&mc, 0, sizeof(mc));

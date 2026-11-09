@@ -177,5 +177,20 @@ int main(void)
     ptp_get_stats(A.ptp, &sa);
     ptp_get_stats(B.ptp, &sb);
     CHECKF(sa.state == PTP_MASTER && sb.state == PTP_SLAVE, "A %s B %s", ptp_state_name(sa.state), ptp_state_name(sb.state));
+    TEST("both peers renegotiate active subscriptions after 48 -> 96 -> 48 kHz");
+    CHECK(port_set_rate(&A,96000) == 0); CHECK(port_set_rate(&B,96000) == 0);
+    for (int k = 0; k < 8; k++) {
+        char name[8]; snprintf(name,sizeof(name), "%02d",k + 1);
+        CHECK(sub_subscribe(&A,k,name,"MON-2") == 0);
+    }
+    run(15.0);
+    CHECKF(receiving(&B,16,32) == 16, "96 kHz: %d of 16",receiving(&B,16,32));
+    CHECKF(receiving(&A,0,8) == 8, "96 kHz reverse: %d of 8",receiving(&A,0,8));
+    CHECK(colsrc_ok(&B,16,1,16));
+    CHECK(port_set_rate(&A,48000) == 0); CHECK(port_set_rate(&B,48000) == 0);
+    run(15.0);
+    CHECKF(receiving(&B,16,32) == 16, "48 kHz: %d of 16",receiving(&B,16,32));
+    CHECKF(receiving(&A,0,8) == 8, "48 kHz reverse: %d of 8",receiving(&A,0,8));
+    CHECK(colsrc_ok(&A,0,2,0));
     return t_done("test_inproc");
 }

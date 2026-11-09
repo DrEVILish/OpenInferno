@@ -78,7 +78,8 @@ module cpu_pktq #(
     reg  [DA:0] tdw, tdr;
     wire [TA:0] tx_used = twp - trd;
     wire [TA:0] tx_free = TXW - tx_used;
-    wire        td_full = (tdw - tdr) == ND;
+    wire [DA:0] td_used = tdw - tdr;
+    wire        td_full = td_used == ND;
     wire        twr = reg_we && reg_addr == 8'h0C;
     wire        tsend = reg_we && reg_addr == 8'h10;
     wire [10:0] s_len = reg_wdata[10:0];
@@ -145,7 +146,9 @@ module cpu_pktq #(
     reg  [31:0] rd_sec   [0:ND-1];
     reg  [29:0] rd_ns    [0:ND-1];
     reg  [DA:0] rdw, rdr;
-    wire        rd_full = (rdw - rdr) == ND;
+    wire [DA:0] rd_used = rdw - rdr;
+    wire [RA:0] rx_used = rws - rrp;
+    wire        rd_full = rd_used == ND;
     wire        rd_have = rdw != rdr;
     wire [RA:0] h_start = rd_start[rdr[DA-1:0]];
     wire [10:0] h_len   = rd_len[rdr[DA-1:0]];
@@ -194,7 +197,7 @@ module cpu_pktq #(
                 // words into the buffer (speculative)
                 racc <= racc_n;
                 if (rbi[1:0] == 2'd3 || s_tlast) begin
-                    if ((rws - rrp) >= RXW || rover) rover <= 1'b1;
+                    if (rx_used >= RXW || rover) rover <= 1'b1;
                     else begin
                         rwe <= 1'b1; rwa <= rws[RA-1:0];
                         case (rbi[1:0])
@@ -210,7 +213,7 @@ module cpu_pktq #(
                     if (!rx_en || claim || s_tuser) rws <= rwp;
                     else if (!(promisc || f_uc || f_bc || (f_mc && allmulti)) || (drop239 && f_ip && f_239 && !f_bcast239)) begin
                         rws <= rwp; rx_filt <= rx_filt + 32'd1;
-                    end else if (rover || ((rws - rrp) >= RXW) || rd_full) begin
+                    end else if (rover || (rx_used >= RXW) || rd_full) begin
                         rws <= rwp; rx_over <= rx_over + 32'd1;
                     end else begin
                         rd_start[rdw[DA-1:0]] <= rwp; rd_len[rdw[DA-1:0]] <= rbi + 11'd1;

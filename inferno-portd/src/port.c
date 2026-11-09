@@ -33,6 +33,7 @@ void port_defaults(port_t *p)
     memset(p, 0, sizeof(*p));
     snprintf(p->desk, sizeof(p->desk), "OpenProSeries");
     p->fs = 48000;
+    p->cfg_mask = IP4(255, 255, 0, 0);
     p->lat_mode = 0;
     p->channels = MAX_CH;
     p->maxlat = 3;
@@ -308,8 +309,7 @@ void port_tick(port_t *p, uint64_t now)
     if (p->ptp) ptp_tick(p->ptp, now);
     if (p->clk) dclock_tick(p->clk, now);
     if (p->dirty && p->state_path[0] && now >= p->next_save) {
-        settings_save(p);
-        p->dirty = 0;
+        if (settings_save(p) == 0) p->dirty = 0;
         p->next_save = now + 1000000000ull;
     }
 }

@@ -27,12 +27,14 @@ int portd_start(port_t *p, hw_t *hw, const portd_opts_t *o)
     p->caps_rxf = (int)(caps >> 24);
     p->maxlat = (int)((caps2 >> 8) & 3);
     if (p->caps_ch < p->channels) p->channels = p->caps_ch;
-    if (p->caps_txf < NTXF || p->caps_rxf < NRXF || p->caps_fch < MAXFCH)
-        LOGW("build has %d TX / %d RX flows, %d ch per flow (the daemon assumes %d / %d / %d)", p->caps_txf, p->caps_rxf, p->caps_fch,
-             NTXF, NRXF, MAXFCH);
+    if (p->caps_ch < 1 || p->caps_ch > MAX_CH || p->caps_txf < NTXF || p->caps_rxf < NRXF || p->caps_fch < MAXFCH) {
+        LOGE("incompatible FPGA: %d columns, %d TX / %d RX flows, %d ch per flow (need 1..%d columns, at least %d / %d / %d)",
+             p->caps_ch, p->caps_txf, p->caps_rxf, p->caps_fch, MAX_CH, NTXF, NRXF, MAXFCH);
+        return -1;
+    }
     if (pktq_init(hw)) return -1;
     p->net = net_new(hw, p->mac);
-    net_set_ip(p->net, p->cfg_ip, p->cfg_mask ? p->cfg_mask : IP4(255, 255, 0, 0), p->cfg_gw);
+    net_set_ip(p->net, p->cfg_ip, p->cfg_mask, p->cfg_gw);
     p->mdns = mdns_new(p->net);
     port_set_identity(p);
     if (p->state_path[0]) settings_load(p);

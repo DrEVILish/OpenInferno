@@ -188,37 +188,60 @@ int ctl_listen(ctl_t *c, const char *path)
     return 0;
 }
 
+/* 1: fully sent; 0: backpressure; -1: connection failed. */
+static int ctl_flush(struct ctl_client *k)
+{
+    while (k->out_pos < k->out_len) {
+        ssize_t n = send(k->fd, k->out + k->out_pos, (size_t)(k->out_len - k->out_pos), MSG_NOSIGNAL);
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 0;
+        if (n <= 0) return -1;
+        k->out_pos += (int)n;
+    }
+    k->out_pos = k->out_len = 0;
+    return 1;
+}
+
 int ctl_poll(ctl_t *c, port_t *p)
 {
     int quit = 0;
     if (c->lfd < 0) return 0;
     int fd = accept(c->lfd, NULL, NULL);
     if (fd >= 0) {
-        fcntl(fd, F_SETFL, O_NONBLOCK);
         int ok = 0;
-        for (int i = 0; i < CTL_CLIENTS; i++) if (c->cl[i].fd < 0) { c->cl[i].fd = fd; c->cl[i].n = 0; ok = 1; break; }
+        if (fcntl(fd, F_SETFL, O_NONBLOCK) == 0)
+            for (int i = 0; i < CTL_CLIENTS; i++) if (c->cl[i].fd < 0) {
+                memset(&c->cl[i], 0, sizeof(c->cl[i])); c->cl[i].fd = fd; ok = 1; break;
+            }
         if (!ok) close(fd);
     }
     for (int i = 0; i < CTL_CLIENTS; i++) {
         struct ctl_client *k = &c->cl[i];
         if (k->fd < 0) continue;
+        int sent = ctl_flush(k);
+        if (sent < 0) { close(k->fd); k->fd = -1; continue; }
+        if (!sent) continue;
+        if (k->quit) { quit = 1; continue; }
         ssize_t r = read(k->fd, k->buf + k->n, sizeof(k->buf) - 1 - (size_t)k->n);
-        if (r == 0 || (r < 0 && errno != EAGAIN)) { close(k->fd); k->fd = -1; continue; }
+        if ((r == 0 && !memchr(k->buf, '\n', (size_t)k->n)) || (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+            close(k->fd); k->fd = -1; continue;
+        }
         if (r > 0) k->n += (int)r;
         k->buf[k->n] = 0;
         char *nl;
         while ((nl = strchr(k->buf, '\n'))) {
             *nl = 0;
             if (nl > k->buf && nl[-1] == '\r') nl[-1] = 0;
-            static char out[16384];
-            int rr = ctl_exec(p, k->buf, out, sizeof(out));
-            if (write(k->fd, out, strlen(out)) < 0) { }
-            if (rr == 1) quit = 1;
+            k->quit = ctl_exec(p, k->buf, k->out, sizeof(k->out)) == 1;
+            k->out_len = (int)strlen(k->out);
             int used = (int)(nl + 1 - k->buf);
-            memmove(k->buf, nl + 1, (size_t)(k->n - used) + 1);
-            k->n -= used;
+            memmove(k->buf, nl + 1, (size_t)(k->n - used) + 1); k->n -= used;
+            sent = ctl_flush(k);
+            if (sent < 0) { close(k->fd); k->fd = -1; break; }
+            if (!sent) break;
+            if (k->quit) { quit = 1; break; }
         }
-        if (k->n >= (int)sizeof(k->buf) - 1) k->n = 0;
+        if (k->fd >= 0 && k->n >= (int)sizeof(k->buf) - 1) { close(k->fd); k->fd = -1; }
     }
     return quit;
 }

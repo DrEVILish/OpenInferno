@@ -34,7 +34,9 @@ struct mdns {
     mdns_svc_t svc[NSVC];
     int        used[NSVC];
     int        announce[NSVC];
-    uint64_t   next_announce;
+    uint64_t   next_announce, next_reply;
+    struct { uint32_t ip; uint16_t port, id; uint64_t last; } reply[NSVC];
+    int reply_cursor;
     rr_t       cache[NCACHE];
     struct { char name[160]; uint16_t type; uint64_t last; } q[NQ];
     mdns_stats_t st;
@@ -233,14 +235,14 @@ void mdns_remove(mdns_t *m, const char *inst, const char *type)
     for (int i = 0; i < NSVC; i++)
         if (m->used[i] && !strcasecmp(m->svc[i].inst, inst) && !strcmp(m->svc[i].type, type)) {
             if (net_ready(m->n)) send_svc(m, i, MDNS_GROUP, MDNS_PORT, 0, 0);   /* goodbye */
-            m->used[i] = 0;
+            m->used[i] = 0; m->reply[i].port = 0;
         }
 }
 
 void mdns_remove_all(mdns_t *m)
 {
     for (int i = 0; i < NSVC; i++)
-        if (m->used[i]) { if (net_ready(m->n)) send_svc(m, i, MDNS_GROUP, MDNS_PORT, 0, 0); m->used[i] = 0; }
+        if (m->used[i]) { if (net_ready(m->n)) send_svc(m, i, MDNS_GROUP, MDNS_PORT, 0, 0); m->used[i] = 0; m->reply[i].port = 0; }
 }
 
 static int name_eq(const char *a, const char *b) { return strcasecmp(a, b) == 0; }
@@ -271,7 +273,10 @@ static void on_query(mdns_t *m, uint32_t sip, uint16_t sport, const uint8_t *d, 
             if (!strcmp(s->type, "in-addr")) hit = name_eq(qn, id_f) && (qt == T_A || qt == T_ANY);
             else hit = (name_eq(qn, type_f) && (qt == T_PTR || qt == T_ANY)) || (name_eq(qn, id_f) && qt != T_A) ||
                        (name_eq(qn, host_f) && (qt == T_A || qt == T_ANY));
-            if (hit) send_svc(m, i, dip, dport, legacy ? id : 0, -1);
+            /* Coalesce repeated questions and requests while a reply is pending. */
+            if (hit && dport && !m->reply[i].port) {
+                m->reply[i].ip = dip; m->reply[i].port = dport; m->reply[i].id = legacy ? id : 0;
+            }
         }
     }
 }
@@ -366,6 +371,18 @@ void mdns_free(mdns_t *m) { net_udp_unbind(m->n, MDNS_PORT); free(m); }
 
 void mdns_tick(mdns_t *m, uint64_t now)
 {
+    /* At most four query replies per 10 ms; leave CPU queue capacity for PTP and control. */
+    if (net_ready(m->n) && now >= m->next_reply) {
+        int sent = 0, cursor = m->reply_cursor;
+        for (int k = 0; k < NSVC && sent < 4; k++) {
+            int i = (cursor + k) % NSVC;
+            if (!m->used[i] || !m->reply[i].port || (m->reply[i].last && now - m->reply[i].last < 250000000ull)) continue;
+            send_svc(m, i, m->reply[i].ip, m->reply[i].port, m->reply[i].id, -1);
+            m->reply[i].port = 0; m->reply[i].last = now ? now : 1;
+            m->reply_cursor = (i + 1) % NSVC; sent++;
+        }
+        m->next_reply = now + 10000000ull;
+    }
     if (!net_ready(m->n) || !m->next_announce || now < m->next_announce) return;
     int more = 0, sent = 0;
     for (int i = 0; i < NSVC && sent < 48; i++)

@@ -8,7 +8,7 @@
 typedef struct {
     int lfd;
     char path[108];
-    struct ctl_client { int fd, n; char buf[2048]; } cl[CTL_CLIENTS];
+    struct ctl_client { int fd, n, out_len, out_pos, quit; char buf[2048], out[16384]; } cl[CTL_CLIENTS];
 } ctl_t;
 
 /* runs one command line; out gets the answer. Returns 1 for "quit", 0 ok, -1 error */

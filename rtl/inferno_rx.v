@@ -146,7 +146,7 @@ module inferno_rx #(
     reg  [31:0] w32;
     reg         drop;                  // not IPv4 / UDP / not for a flow
     reg  [31:0] p_sip, p_dip, p_sec;
-    reg  [15:0] p_sport, p_dport, p_ulen;
+    reg  [15:0] p_sport, p_dport, p_ulen, p_iplen;
     reg  [16:0] p_sub;
     // flow search: one key a clock from byte 37 on
     reg         srch, matched;
@@ -177,7 +177,7 @@ module inferno_rx #(
     reg  [23:0] stage [0:2*MAX_SMP-1];
     reg         fin;                   // the frame ended last clock: judge it
     reg         fin_bad;
-    wire [10:0] pay_end = 11'd34 + p_ulen[10:0];  // byte index after the UDP payload (excludes Ethernet padding)
+    wire [16:0] pay_end = 17'd34 + {1'b0, p_ulen};  // byte index after the UDP payload (excludes Ethernet padding)
     assign claim = matched && !drop;
 
     // ---- commit engines (staging -> jitter buffer: samples, one a clock; tags, one frame per two clocks)
@@ -269,6 +269,7 @@ module inferno_rx #(
                 case (idx)
                     11'd13: if ({w16[7:0], s_tdata} != 16'h0800) drop <= 1'b1;
                     11'd14: if (s_tdata != 8'h45) drop <= 1'b1;
+                    11'd17: p_iplen <= {w16[7:0], s_tdata};
                     11'd20: if (s_tdata[5:0] != 6'd0) drop <= 1'b1;     // MF or a fragment offset
                     11'd21: if (s_tdata != 8'd0) drop <= 1'b1;
                     11'd23: if (s_tdata != 8'd17) drop <= 1'b1;
@@ -294,7 +295,10 @@ module inferno_rx #(
                     end else sb <= sb + 2'd1;
                 end
                 if (s_tlast) begin
-                    fin <= 1'b1; fin_bad <= s_tuser;
+                    fin <= 1'b1;
+                    fin_bad <= s_tuser || p_ulen < 16'd17 || p_iplen > 16'd1500
+                               || {1'b0, p_iplen} != 17'd20 + {1'b0, p_ulen}
+                               || {6'd0, idx} + 17'd1 < pay_end;
                 end
             end
             // ---- flow search (keys are flip-flop / LUT RAM: one a clock)

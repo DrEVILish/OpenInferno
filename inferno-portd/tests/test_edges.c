@@ -150,10 +150,108 @@ static void test_control_backpressure(void)
     CHECKF(replies == 200, "received %d of 200 replies", replies);
     close(fd[1]); ctl_close(&c); rmdir(dir); teardown();
 }
+static void test_control_eof(void)
+{
+    TEST("control peer half-close delivers complete commands and discards incomplete ones"); setup();
+    char dir[] = "/tmp/openinferno-eof-XXXXXX", path[108]; CHECK(mkdtemp(dir) != NULL);
+    snprintf(path, sizeof(path), "%s/control", dir);
+    for (int complete = 0; complete < 2; complete++) {
+        ctl_t c; CHECK(ctl_listen(&c, path) == 0);
+        int fd[2]; CHECK(socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, fd) == 0);
+        c.cl[0].fd = fd[0];
+        const char *cmd = complete ? "status\n" : "sta";
+        CHECK(write(fd[1], cmd, strlen(cmd)) == (ssize_t)strlen(cmd));
+        CHECK(shutdown(fd[1], SHUT_WR) == 0);
+        ctl_poll(&c, &p); ctl_poll(&c, &p);
+        CHECK(c.cl[0].fd == -1);
+        char out[16384] = ""; ssize_t n = read(fd[1], out, sizeof(out) - 1);
+        if (complete) CHECK(n > 0 && strstr(out, "ok\n"));
+        else CHECK(n == 0);
+        close(fd[1]); ctl_close(&c);
+    }
+    rmdir(dir); teardown();
+}
+
+static void test_control_errors(void)
+{
+    TEST("invalid subscriptions and refused multicast commands report errors"); setup();
+    char out[256];
+    CHECK(ctl_exec(&p, "sub 0 01@peer", out, sizeof(out)) == -1);
+    CHECK(!strncmp(out, "err ", 4));
+    CHECK(ctl_exec(&p, "mcast 0 1", out, sizeof(out)) == -1);
+    CHECK(!strncmp(out, "err ", 4));
+    CHECK(ctl_exec(&p, "mcast 1 1", out, sizeof(out)) == 0);
+    CHECK(ctl_exec(&p, "mcast 1 1", out, sizeof(out)) == -1);
+    CHECK(!strncmp(out, "err ", 4));
+    teardown();
+}
+
+static const struct hw_ops *real_ops;
+static uint32_t caps_value;
+static uint32_t test_caps_read(hw_t *h, uint32_t addr)
+{
+    return addr == h->port_base + INF_CAPS ? caps_value : real_ops->rd(h, addr);
+}
+static void test_capabilities(void)
+{
+    TEST("incompatible FPGA flow capacities are rejected before configuration");
+    const uint32_t bad[] = {0x10102000u, 0x10102041u, 0x10101040u, 0x10082040u, 0x08102040u};
+    for (size_t i = 0; i < ARRAY_LEN(bad); i++) {
+        model_cfg_t m = {0}; m.phy_fd = -1; m.maxlat = 3; m.port_base = m.clock_base = 0x1000;
+        m.dclk_base = m.cs2k_base = 0xffffffffu;
+        hw_t *h = model_open(&m);
+        real_ops = h->ops;
+        struct hw_ops ops = *real_ops; ops.rd = test_caps_read; h->ops = &ops; caps_value = bad[i];
+        port_defaults(&p); portd_opts_t o = {0}; o.log_sync = -2;
+        CHECK(portd_start(&p, h, &o) == -1);
+        CHECK(p.net == NULL); h->ops->close(h);
+    }
+    TEST("an explicit /0 mask is not replaced by the default /16"); setup();
+    CHECK(net_mask(p.net) == IP4(255,255,0,0)); teardown();
+    port_defaults(&p); p.cfg_ip = IP4(192,0,2,10); p.cfg_mask = 0;
+    model_cfg_t m = {0}; m.phy_fd = -1; m.maxlat = 3; m.port_base = m.clock_base = 0x1000;
+    m.dclk_base = m.cs2k_base = 0xffffffffu;
+    hw_t *h = model_open(&m); portd_opts_t o = {0}; o.log_sync = -2;
+    CHECK(portd_start(&p,h,&o) == 0); CHECK(net_mask(p.net) == 0); teardown();
+}
+
+static void test_discovery_flood(void)
+{
+    TEST("repeated discovery questions are coalesced and replies are paced"); setup();
+    uint8_t frame[512] = {0};
+    uint8_t *ip = frame + 14, *u = ip + 20, *d = u + 8;
+    int pos = 12; put16(d + 4, 5);
+    for (int i = 0; i < 5; i++) {
+        pos += dns_put_name(d + pos, 400 - pos, "_netaudio-chan._udp.local");
+        put16(d + pos, 12); put16(d + pos + 2, 1); pos += 4;
+    }
+    put16(frame + 12, 0x0800); ip[0] = 0x45; put16(ip + 2, (uint16_t)(28 + pos));
+    ip[8] = 255; ip[9] = 17; put32(ip + 12, IP4(192,0,2,11)); put32(ip + 16, MDNS_GROUP);
+    put16(ip + 10, inet_csum(ip,20,0)); put16(u,5353); put16(u + 2,5353); put16(u + 4,(uint16_t)(8 + pos));
+    stamp_t ts = {0}; mdns_stats_t before, after; net_stats_t ns_before, ns_after;
+    mdns_get_stats(p.mdns, &before); net_get_stats(p.net, &ns_before);
+    for (int i = 0; i < 20; i++) net_input(p.net,frame,42 + pos,&ts);
+    mdns_get_stats(p.mdns, &after); CHECK(after.tx_responses == before.tx_responses);
+    /* Drain initial announcements before measuring query replies in isolation. */
+    for (int i = 0; i < 2200; i++) { now += 1000000ull; port_tick(&p, now); }
+    mdns_get_stats(p.mdns, &before); net_get_stats(p.net, &ns_before);
+    for (int i = 0; i < 20; i++) net_input(p.net,frame,42 + pos,&ts);
+    for (int i = 0; i < 100; i++) { now += 1000000ull; port_tick(&p,now); }
+    mdns_get_stats(p.mdns, &after); net_get_stats(p.net, &ns_after);
+    CHECK(after.tx_responses > before.tx_responses);
+    CHECK(after.tx_responses - before.tx_responses <= 40);
+    CHECK(ns_after.drops == ns_before.drops);
+    for (int i = 0; i < 300; i++) { now += 1000000ull; port_tick(&p,now); }
+    mdns_get_stats(p.mdns, &after);
+    CHECK(after.tx_responses - before.tx_responses == 64);
+    teardown();
+}
+
 int main(void)
 {
     g_log_level = LOG_ERR; g_now_ns = vnow;
     test_reused_flow_budget(); test_handle_update_budget(); test_save_failure(); test_save_retry();
     test_mac_refresh(); test_control_backpressure();
+    test_control_eof(); test_control_errors(); test_capabilities(); test_discovery_flood();
     return t_done("test_edges");
 }

@@ -30,6 +30,7 @@ typedef struct {
     int      wire_side;
     uint32_t cs2k_r0;         /* the CS2000 ratio (12.20) at which the desk clock runs at its nominal rate */
     uint64_t tod_start_ns;    /* the time of day at power-up (the RTL starts at 0) */
+    uint32_t caps;            /* INF_CAPS to report (tests of smaller builds); 0: the full build */
 } model_cfg_t;
 
 hw_t *model_open(const model_cfg_t *cfg);

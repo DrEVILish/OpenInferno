@@ -27,9 +27,11 @@ int portd_start(port_t *p, hw_t *hw, const portd_opts_t *o)
     p->caps_rxf = (int)(caps >> 24);
     p->maxlat = (int)((caps2 >> 8) & 3);
     if (p->caps_ch < p->channels) p->channels = p->caps_ch;
-    if (p->caps_ch < 1 || p->caps_ch > MAX_CH || p->caps_txf < NTXF || p->caps_rxf < NRXF || p->caps_fch < MAXFCH) {
-        LOGE("incompatible FPGA: %d columns, %d TX / %d RX flows, %d ch per flow (need 1..%d columns, at least %d / %d / %d)",
-             p->caps_ch, p->caps_txf, p->caps_rxf, p->caps_fch, MAX_CH, NTXF, NRXF, MAXFCH);
+    /* the caps are the run-time limits; refuse only what the static tables cannot hold, or a port with no flows */
+    if (p->caps_ch < 1 || p->caps_ch > MAX_CH || p->caps_fch < 1 || p->caps_fch > MAXFCH || p->caps_txf > NTXF ||
+        p->caps_rxf > NRXF || p->caps_txf + p->caps_rxf == 0) {
+        LOGE("incompatible FPGA: %d columns, %d TX / %d RX flows, %d ch per flow (supported: 1..%d columns, 0..%d / 0..%d flows "
+             "but not none, 1..%d ch per flow)", p->caps_ch, p->caps_txf, p->caps_rxf, p->caps_fch, MAX_CH, NTXF, NRXF, MAXFCH);
         return -1;
     }
     if (pktq_init(hw)) return -1;
@@ -38,8 +40,7 @@ int portd_start(port_t *p, hw_t *hw, const portd_opts_t *o)
     p->mdns = mdns_new(p->net);
     port_set_identity(p);
     if (p->state_path[0]) settings_load(p);
-    int limit = p->fs > 50000 ? MAX_CH / 2 : MAX_CH;
-    limit = MIN(limit, p->caps_ch);
+    int limit = p->fs > 50000 ? p->caps_ch / 2 : p->caps_ch;   /* 96 kHz plays half the build's columns */
     if (p->channels > limit) p->channels = limit;
     port_set_identity(p);
     snprintf(g_log_tag, sizeof(g_log_tag), "%s", p->name);
@@ -69,8 +70,8 @@ int portd_start(port_t *p, hw_t *hw, const portd_opts_t *o)
         info_init(p);
         port_advertise(p);
     }
-    LOGI("port %d up: %d channels each way at %d Hz, latency %u ns, PTP role %d%s", p->n + 1, p->channels, p->fs, port_latency_ns(p),
-         o->ptp_role, o->clock_owner ? ", desk clock owner" : "");
+    LOGI("port %d up: %d TX / %d RX channels at %d Hz, latency %u ns, PTP role %d%s", p->n + 1, port_tx_channels(p), p->channels, p->fs,
+         port_latency_ns(p), o->ptp_role, o->clock_owner ? ", desk clock owner" : "");
     return 0;
 }
 
@@ -79,8 +80,8 @@ void portd_stop(port_t *p)
     port_unadvertise(p);
     sub_shutdown(p);
     uint32_t z = 0;
-    for (int f = 0; f < NTXF; f++) tbl_write(p->hw, TBL_TX(f, 0), &z, 1);
-    for (int f = 0; f < NRXF; f++) tbl_write(p->hw, TBL_RX(f, 0), &z, 1);
+    for (int f = 0; f < p->caps_txf; f++) tbl_write(p->hw, TBL_TX(f, 0), &z, 1);
+    for (int f = 0; f < p->caps_rxf; f++) tbl_write(p->hw, TBL_RX(f, 0), &z, 1);
     if (p->state_path[0]) settings_save(p);
     if (p->ptp) ptp_free(p->ptp);
     if (p->clk) dclock_free(p->clk);

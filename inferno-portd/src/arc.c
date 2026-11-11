@@ -193,12 +193,12 @@ int arc_handle(port_t *p, const uint8_t *req, int len, uint8_t *out, int max)
         memset(x, 0, sizeof(x));
         x[0] = 0;
         x[1] = 0x30;   /* Flags2: supports_tx_channel_rename (bit 4), supports_tx_multicast (bit 5) */
-        put16(x + 2, (uint16_t)p->channels); put16(x + 4, (uint16_t)p->channels);
+        put16(x + 2, (uint16_t)port_tx_channels(p)); put16(x + 4, (uint16_t)p->channels);
         put16(x + 6, 4);
-        put16(x + 8, (uint16_t)MIN(MAXFCH, p->channels));
+        put16(x + 8, (uint16_t)MIN(p->caps_fch, p->channels));
         put16(x + 10, 8);
-        put16(x + 12, NTXF); put16(x + 14, NRXF);
-        put16(x + 16, (uint16_t)(2 * p->channels));
+        put16(x + 12, (uint16_t)p->caps_txf); put16(x + 14, (uint16_t)p->caps_rxf);
+        put16(x + 16, (uint16_t)(port_tx_channels(p) + p->channels));
         put16(x + 18, 1); put16(x + 20, 1);
         r = respond(req, 1, x, 34, out, max);
         break;
@@ -233,14 +233,14 @@ int arc_handle(port_t *p, const uint8_t *req, int len, uint8_t *out, int max)
     case 0x2000: {
         int st = start_index(c, clen);
         if (st < 0) { r = respond(req, 0xFFFF, NULL, 0, out, max); break; }
-        int more = serialize_items(p, MIN(p->channels, 32), st, p->channels, 8, tx_item, &cx, b);
+        int more = serialize_items(p, MIN(port_tx_channels(p), 32), st, port_tx_channels(p), 8, tx_item, &cx, b);
         r = respond_page(req, more, b, out, max);
         break;
     }
     case 0x2010: {
         int st = start_index(c, clen);
         if (st < 0) { r = respond(req, 0xFFFF, NULL, 0, out, max); break; }
-        int more = serialize_items(p, MIN(p->channels, 32), st, p->channels, 6, txf_item, &cx, b);
+        int more = serialize_items(p, MIN(port_tx_channels(p), 32), st, port_tx_channels(p), 6, txf_item, &cx, b);
         r = respond_page(req, more, b, out, max);
         break;
     }
@@ -251,7 +251,7 @@ int arc_handle(port_t *p, const uint8_t *req, int len, uint8_t *out, int max)
             uint16_t id = get16(it + 2), no = get16(it + 4);
             char nm[64];
             if (!id || !no || !cstr(c, clen, no, nm, sizeof(nm))) continue;
-            if (id - 1 < p->channels) { port_rename_tx(p, id - 1, nm); any = 1; }
+            if (id - 1 < port_tx_channels(p)) { port_rename_tx(p, id - 1, nm); any = 1; }
         }
         static const uint8_t ok[2] = { 0, 0 };
         r = any ? respond(req, 1, ok, 2, out, max) : respond(req, 0xFFFF, NULL, 0, out, max);
@@ -276,7 +276,7 @@ int arc_handle(port_t *p, const uint8_t *req, int len, uint8_t *out, int max)
     case 0x2200: {   /* query TX flows */
         int st = start_index(c, clen);
         if (st < 0) { r = respond(req, 0xFFFF, NULL, 0, out, max); break; }
-        int more = serialize_items(p, MIN(NTXF, 16), st, NTXF, 2, qtx_item, &cx, b);
+        int more = serialize_items(p, MIN(p->caps_txf, 16), st, p->caps_txf, 2, qtx_item, &cx, b);
         r = respond_page(req, more, b, out, max);
         break;
     }
@@ -288,9 +288,9 @@ int arc_handle(port_t *p, const uint8_t *req, int len, uint8_t *out, int max)
             if (off < 0 || off + 16 > clen) continue;
             const uint8_t *d = c + off;
             uint16_t id = get16(d), type = get16(d + 2), nch = get16(d + 14);
-            if (type != 2 || id == 0 || id > NTXF) { LOGW("ARC: bad multicast flow id %u type %u", id, type); continue; }
+            if (type != 2 || id == 0 || id > p->caps_txf) { LOGW("ARC: bad multicast flow id %u type %u", id, type); continue; }
             if (p->tx[id - 1].used) { LOGW("ARC: tx flow id %u busy", id); continue; }
-            if (off + 16 + 2 * nch + 2 > clen || nch == 0 || nch > MAXFCH) continue;
+            if (off + 16 + 2 * nch + 2 > clen || nch == 0 || nch > p->caps_fch) continue;
             int16_t chs[MAXFCH];
             for (int k = 0; k < nch; k++) { uint16_t v = get16(d + 16 + 2 * k); chs[k] = v ? (int16_t)(v - 1) : -1; }
             if (txflow_create_mcast(p, id - 1, chs, nch) == 0) ids[ni++] = id;
@@ -319,7 +319,7 @@ int arc_handle(port_t *p, const uint8_t *req, int len, uint8_t *out, int max)
     case 0x3200: {   /* query RX flows */
         int st = start_index(c, clen);
         if (st < 0) { r = respond(req, 1, NULL, 0, out, max); break; }
-        int more = serialize_items(p, MIN(NRXF, 16), st, NRXF, 2, qrx_item, &cx, b);
+        int more = serialize_items(p, MIN(p->caps_rxf, 16), st, p->caps_rxf, 2, qrx_item, &cx, b);
         r = respond_page(req, more, b, out, max);
         break;
     }

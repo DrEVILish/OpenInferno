@@ -29,6 +29,8 @@
 //   0x50 TX_FRAMES   0x54 TX_REJECTS   0x58 RX_FRAMES   0x5C RX_OVERFLOWS (no room: frame lost)   0x60 RX_FILTERED
 // RX takes a frame that the audio depacketiser did not claim, with a good FCS, for our MAC, broadcast, or
 // multicast with "all multicast" (or anything when promiscuous).
+// TX pace (tb_inferno_pace): m_tready may take at most one octet every 2 clocks (tq is read one clock after trd moves);
+// at 1 clock an octet each word's first octet is the previous word's, silently. rmii_tx takes one every 4.
 `include "clog2.vh"
 `timescale 1ns / 1ps
 `default_nettype none

@@ -105,10 +105,10 @@ static void heartbeat(port_t *p)
         bb_u16(&b, 16); bb_u16(&b, 0x8001); bb_u16(&b, 4); bb_u16(&b, 4); bb_u16(&b, ctr); bb_u16(&b, 0);
         bb_u32(&b, (uint32_t)ppb);
         /* RX latency per flow (upstream's 0x8003 part; we report the peak the FPGA measured, frames) */
-        bb_u16(&b, (uint16_t)(24 + NRXF * 4)); bb_u16(&b, 0x8003); bb_u16(&b, 4); bb_u16(&b, (uint16_t)(12 + NRXF * 4));
-        bb_u16(&b, ctr); bb_u16(&b, 0); bb_u16(&b, NRXF); bb_u16(&b, 0); bb_u16(&b, 24); bb_u16(&b, 0);
+        bb_u16(&b, (uint16_t)(24 + p->caps_rxf * 4)); bb_u16(&b, 0x8003); bb_u16(&b, 4); bb_u16(&b, (uint16_t)(12 + p->caps_rxf * 4));
+        bb_u16(&b, ctr); bb_u16(&b, 0); bb_u16(&b, (uint16_t)p->caps_rxf); bb_u16(&b, 0); bb_u16(&b, 24); bb_u16(&b, 0);
         bb_u32(&b, (uint32_t)p->fs);
-        for (int f = 0; f < NRXF; f++) {
+        for (int f = 0; f < p->caps_rxf; f++) {
             uint32_t l = 0;
             if (p->rx[f].used && p->rx[f].state) {
                 l = tbl_read(p->hw, TBL_RXST(f, 3));

@@ -1,6 +1,8 @@
 // tb_fs_phase.v - fs_phase.v against ptp_clock.v: a desk frame clock 100 ppm slow of the media clock (48 kHz, its
 // own asynchronous clock); the snapshot's phase (DESK_FRAMES - MEDIA_TS - TICKS / PERIOD) must fall by 100 ppm x the
-// media frames, the edge count and the desk period must match, CTRL clear and ID.
+// media frames, the edge count and the desk period must match, CTRL clear and ID. A media load: a snapshot before the
+// next desk edge still holds the old count, one whose edge count has moved on holds the new one (what inferno-portd's
+// audio loop relies on to skip a stale latch, issue 008).
 // Provenance: written for OpenProSeries (W16). Licence: GPL-3.0.
 `timescale 1ns/1ps
 `default_nettype none
@@ -10,11 +12,13 @@ module tb_fs_phase;
     // the desk frame clock: 1 / 48 kHz x (1 + 100e-6), 50 % duty
     real half = 1.0e9 / 48000.0 / 2.0 * (1.0 + 100.0e-6);
     reg desk = 0;
+    reg sm = 0;
+    reg [31:0] sm_ts = 0;
     initial begin #3.7; forever #(half) desk = ~desk; end
     wire [47:0] sec; wire [29:0] ns; wire [31:0] media_ts; wire frame_strobe; wire [77:0] ts_tx, ts_rx;
     wire [31:0] msec; wire [16:0] msub;
     ptp_clock u_clk (.clk(clk), .rst(rst), .incr(32'h14000000), .set_tod(1'b0), .set_sec(48'd0), .set_ns(30'd0), .sec(sec), .ns(ns),
-        .media_inc(32'h003EEA21), .set_media(1'b0), .set_media_ts(32'd0), .media_ts(media_ts), .frame_strobe(frame_strobe),
+        .media_inc(32'h003EEA21), .set_media(sm), .set_media_ts(sm_ts), .media_ts(media_ts), .frame_strobe(frame_strobe),
         .media_fs(17'd48000), .set_media_sec(32'd0), .set_media_sub(17'd0), .media_sec(msec), .media_sub(msub),
         .sfd_tx(1'b0), .sfd_rx(1'b0), .ts_tx(ts_tx), .ts_rx(ts_rx));
     reg  [7:0]  a = 0;
@@ -49,9 +53,18 @@ module tb_fs_phase;
         if (f1 - f0 < 958 || f1 - f0 > 961) begin errors = errors + 1; $display("desk edges %0d in 20 ms", f1 - f0); end
         if (dp < 1041 || dp > 1043) begin errors = errors + 1; $display("desk period %0d clocks", dp); end
         if (p1 < 1041 || p1 > 1042) begin errors = errors + 1; $display("media period %0d clocks", p1); end
+        // a media load just after a desk edge, a snapshot at once (no edge since), one a desk frame later
+        @(posedge desk); repeat (8) @(posedge clk);
+        @(posedge clk) begin sm <= 1; sm_ts <= media_ts + 32'd1000000; end
+        @(posedge clk) sm <= 0;
+        wr(8'h08, 0); rdr(8'h0C, f0); rdr(8'h10, t0);
+        #25_000;
+        wr(8'h08, 0); rdr(8'h0C, f1); rdr(8'h10, t1);
+        if (t0 - (sm_ts - 32'd1000000) + 32'd2 > 32'd4) begin errors = errors + 1; $display("load: snapshot before an edge at %0d, want the old count", t0); end
+        if (f1 == f0 || t1 - sm_ts + 32'd2 > 32'd4) begin errors = errors + 1; $display("load: edges %0d -> %0d, media_ts %0d want %0d", f0, f1, t1, sm_ts); end
         wr(8'h04, 32'h3); wr(8'h08, 0); rdr(8'h0C, f0);
         if (f0 > 1) begin errors = errors + 1; $display("clear: %0d", f0); end
-        if (errors == 0) $display("PASS tb_fs_phase: a -100 ppm desk clock reads %0.4f frames over %0.1f media frames (want %0.4f), 1 042-clock periods, clear",
+        if (errors == 0) $display("PASS tb_fs_phase: a -100 ppm desk clock reads %0.4f frames over %0.1f media frames (want %0.4f), 1 042-clock periods, a load seen from the next edge on, clear",
                                   ph1 - ph0, dmed, want);
         else $display("FAIL tb_fs_phase: %0d errors", errors);
         $finish;

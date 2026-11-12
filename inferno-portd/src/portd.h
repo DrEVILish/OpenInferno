@@ -15,7 +15,8 @@
 #include "mdns.h"
 #include "net.h"
 
-#define MAX_CH      64      /* columns per port at 48 kHz (32 at 96 kHz) */
+/* compile-time maxima: they size the tables; the build's INF_CAPS values (port_t caps_*) are the run-time limits */
+#define MAX_CH      64      /* columns per port at 48 kHz (half at 96 kHz) */
 #define NTXF        16      /* FPGA TX flows */
 #define NRXF        16      /* FPGA RX flows */
 #define MAXFCH      32      /* channels per flow, either way */
@@ -34,6 +35,7 @@
 /* upstream SubscriptionStatus */
 enum {
     SUB_NONE = 0, SUB_UNRESOLVED = 1, SUB_IN_PROGRESS = 8, SUB_TOO_MANY = 0x14, SUB_TX_FAIL = 0x15,
+    SUB_LATENCY = 0x1A,   /* Dante RX status 26, channel latency: the transmitter needs more than our buffer holds */
     SUB_RX_UNICAST = 0x01010009, SUB_RX_MULTICAST = 0x0101000a,
 };
 
@@ -104,7 +106,7 @@ typedef struct port {
     uint32_t cfg_ip, cfg_mask, cfg_gw;
     int      fs;
     int      lat_mode;               /* 0..3 = 0.5 / 1 / 2 / 5 ms */
-    int      channels;               /* each way */
+    int      channels;               /* columns: the RX channels; TX channels = port_tx_channels() */
     int      maxlat, caps_ch, caps_fch, caps_txf, caps_rxf;
     char     txname[MAX_CH][32], rxname[MAX_CH][32];
     char     state_path[256];
@@ -126,6 +128,9 @@ typedef struct port {
     int      changed_rx[MAX_CH];     /* channels for the next change notification */
     int      any_changed;
 } port_t;
+
+/* a build without TX flows (receive-only) has no TX channels */
+static inline int port_tx_channels(const port_t *p) { return p->caps_txf ? p->channels : 0; }
 
 /* identity and adverts (port.c) */
 void port_defaults(port_t *p);
@@ -173,6 +178,7 @@ int  sub_subscribe(port_t *p, int k, const char *txch, const char *txhost);
 void sub_unsubscribe(port_t *p, int k);
 void sub_tick(port_t *p, uint64_t now);
 int  sub_status(const port_t *p, int k);
+int  sub_latency_fits(const port_t *p, uint32_t their_ns);   /* our jitter buffer holds a peer at this latency */
 void sub_retime(port_t *p);
 void sub_reset_rate(port_t *p);
 void sub_shutdown(port_t *p);                  /* stops every RX flow (the daemon exits) */

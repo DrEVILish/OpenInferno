@@ -46,7 +46,7 @@
 `timescale 1ns / 1ps
 `default_nettype none
 module inferno_tx #(
-    parameter MAX_CH  = 64,            // port columns (a power of two, <= 64)
+    parameter MAX_CH  = 64,            // port columns (a power of two, 2..64)
     parameter NFLOW   = 16,
     parameter MAXFCH  = 32,            // channels per flow (<= 32)
     parameter MAX_FPP = 32,            // frames per packet (<= 32)

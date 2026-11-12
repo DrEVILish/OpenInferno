@@ -45,7 +45,7 @@
 `timescale 1ns / 1ps
 `default_nettype none
 module inferno_rx #(
-    parameter MAX_CH  = 64,            // port columns (a power of two, <= 64)
+    parameter MAX_CH  = 64,            // port columns (a power of two, 2..64)
     parameter NFLOW   = 16,
     parameter MAXFCH  = 32,            // channels per flow (<= 32)
     parameter MAX_SMP = 512,           // samples staged per packet (1463-byte payload / 3 = 487)
@@ -241,6 +241,13 @@ module inferno_rx #(
     wire [7:0]  cmapb = (cc[1:0] == 2'd0) ? mapw[7:0] : (cc[1:0] == 2'd1) ? mapw[15:8] : (cc[1:0] == 2'd2) ? mapw[23:16] : mapw[31:24];
     wire        c_col_ok = !cmapb[7] && cmapb[5:0] < (chi ? MAX_CH / 2 : MAX_CH) && cc < MAXFCH;
     wire [NFW:0] cslot = cts[NFW:0] + cf[NFW:0];                  // frame slot (NFW + 1 bits used at 96 kHz)
+    // 96 kHz address {slot, column}: CW - 1 column bits, none at MAX_CH = 2 (one column, no [CW-2:0] select)
+    wire [JAW-1:0] cwa96;
+    generate if (CW > 1) begin : g_cwa96
+        assign cwa96 = {cslot[NFW:0], cmapb[CW-2:0]};
+    end else begin : g_cwa96_1col
+        assign cwa96 = cslot[NFW:0];
+    end endgenerate
     wire [NFLOW-1:0] fbit = {{(NFLOW-1){1'b0}}, 1'b1} << cfl;
     // The tag RAM is one block RAM with two ports. Port A (read / write): the playout sweep (write) first, else the
     // tag engine (read at tph 0, merge and write at tph 1). Port B (read): the playout. The tag engine's read result
@@ -380,7 +387,7 @@ module inferno_rx #(
             // ---- commit samples: one a clock (stage_q is the word of ck from the clock before)
             if (cbusy) begin
                 cwe <= c_col_ok;
-                cwa <= chi ? {cslot[NFW:0], cmapb[CW-2:0]} : {cslot[NFW-1:0], cmapb[CW-1:0]};
+                cwa <= chi ? cwa96 : {cslot[NFW-1:0], cmapb[CW-1:0]};
                 if (c_col_ok) owner[cmapb[CW-1:0]] <= {1'b1, cfl};
                 ck <= ck + 1'b1;
                 if (cc + 6'd1 >= cnch) begin cc <= 6'd0; cf <= cf + 10'd1; end else cc <= cc + 6'd1;
@@ -411,7 +418,13 @@ module inferno_rx #(
     // port B of the tag RAM and the jitter buffer's read port are enabled only in the clocks whose data are used (the
     // tag in the clock after the strobe, the samples while the burst runs): no idle reads collide with writes
     always @(posedge clk) if (strobe_d) ptag_q <= tags[play_r[TGW-1:0]];
-    wire [JAW-1:0] pa = phi ? {pslot[NFW:0], pc[CW-2:0]} : {pslot[NFW-1:0], pc[CW-1:0]};
+    wire [JAW-1:0] pa96;                                          // as cwa96
+    generate if (CW > 1) begin : g_pa96
+        assign pa96 = {pslot[NFW:0], pc[CW-2:0]};
+    end else begin : g_pa96_1col
+        assign pa96 = pslot[NFW:0];
+    end endgenerate
+    wire [JAW-1:0] pa = phi ? pa96 : {pslot[NFW-1:0], pc[CW-1:0]};
     always @(posedge clk) if (pbusy) jq <= jbuf[pa];
     always @(posedge clk) own_q <= owner[pc[CW-1:0]];
     wire        tag_hit = ptag[15:0] == pts[15:0];

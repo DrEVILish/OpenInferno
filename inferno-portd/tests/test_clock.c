@@ -26,8 +26,9 @@ static uint64_t vnow(void) { return vt; }
 static port_t A, B;
 static model_wire_t *W;
 
-/* B every 125 ms: the ratio in force (the model's), the desk clock's mode and lock, the audio phase */
-typedef struct { uint64_t t; double ppm; int mode, locked; double phase; } smp_t;
+/* B every 125 ms: the ratio in force (the model's), the desk clock's mode and lock, the audio phase, the model's desk
+ * frames - media frames (samples, what an elastic buffer between the two sees) */
+typedef struct { uint64_t t; double ppm; int mode, locked; double phase, abs; } smp_t;
 #define NSMP 16384
 static smp_t S[NSMP];
 static int ns;
@@ -57,7 +58,7 @@ static void run(double seconds)
             dclock_stats_t c;
             model_get_stats(B.hw, &m);
             dclock_get_stats(B.clk, &c);
-            S[ns++] = (smp_t){ vt, ppm_of(m.cs2k_ratio), c.mode, c.locked, c.audio_phase };
+            S[ns++] = (smp_t){ vt, ppm_of(m.cs2k_ratio), c.mode, c.locked, c.audio_phase, m.desk_pos - m.media_pos };
         }
     }
 }
@@ -122,6 +123,26 @@ static int first_off(uint64_t t0, double ppm, double tol)
 {
     for (int i = 0; i < ns; i++) if (S[i].t >= t0 && fabs(S[i].ppm - ppm) > tol) return i;
     return -1;
+}
+
+/* frames an elastic buffer of +-1 sample, centred at the first sample after t0, repeats or drops from t0 on */
+static int slips(uint64_t t0)
+{
+    int n = 0, have = 0;
+    double c = 0;
+    for (int i = 0; i < ns; i++) {
+        if (S[i].t <= t0) continue;
+        if (!have) { c = S[i].abs; have = 1; }
+        while (S[i].abs - c > 1.0) { c += 1.0; n++; }
+        while (c - S[i].abs > 1.0) { c -= 1.0; n++; }
+    }
+    return n;
+}
+static double worst_off(uint64_t t0, double ppm)
+{
+    double w = 0;
+    for (int i = 0; i < ns; i++) if (S[i].t > t0 && fabs(S[i].ppm - ppm) > w) w = fabs(S[i].ppm - ppm);
+    return w;
 }
 
 /* the dither moves the ratio by one LSB around the commanded value: 1 LSB = 0.477 ppm at R0 = 2.0 */
@@ -255,6 +276,37 @@ static void test_clockfail_runtime(void)
     teardown();
 }
 
+/* issue 008: a rate change in the tick in which the audio loop is due: the media load and the loop's snapshot come at
+ * the same instant, so fs_phase's latch is still from before the load (MEDIA_TS on the old count). The loop must not
+ * take it as its new reference */
+static void test_rate_change_stale(void)
+{
+    TEST("48 -> 96 kHz in the audio loop's tick (fs_phase's latch from before the media load): the loop re-locks, the ratio stays");
+    setup(0, -2);
+    double track = settle();
+    /* the loop's tick: its phase changes there; the next one is 125 ms later */
+    dclock_stats_t c;
+    dclock_get_stats(B.clk, &c);
+    double ph = c.audio_phase;
+    for (int i = 0; i < 200 && c.audio_phase == ph; i++) { run(0.001); dclock_get_stats(B.clk, &c); }
+    run(0.124);
+    uint64_t loads = c.media_loads;
+    CHECK(port_set_rate(&A, 96000) == 0 && port_set_rate(&B, 96000) == 0);
+    uint64_t t0 = vt;
+    run(40.0);
+    dclock_get_stats(B.clk, &c);
+    double off = worst_off(t0, track);
+    int sl = slips(t0);
+    printf("  after the change: ratio up to %.3f ppm off the tracked %.2f, %d slips, phase %.4f samples, %llu media loads\n",
+           off, track, sl, c.audio_phase, (unsigned long long)(c.media_loads - loads));
+    CHECKF(c.media_loads > loads, "media loads %llu", (unsigned long long)c.media_loads);
+    CHECKF(c.mode == DCLK_FOLLOWER && c.locked, "mode %d locked %d", c.mode, c.locked);
+    CHECKF(off < 2.0, "ratio %.3f ppm off the tracked one", off);
+    CHECKF(sl == 0, "%d slips", sl);
+    CHECKF(fabs(c.audio_phase) < 0.05, "phase %.4f samples 40 s after the change", c.audio_phase);
+    teardown();
+}
+
 int main(void)
 {
     g_log_level = getenv("V") ? LOG_DEBUG : LOG_WARN;
@@ -264,5 +316,6 @@ int main(void)
     test_holdover_gaps(1);
     test_go_leader();
     test_clockfail_runtime();
+    test_rate_change_stale();
     return t_done("test_clock");
 }

@@ -472,7 +472,9 @@ follower port's when the desk follows an Inferno port, else the first Inferno po
      through the IO command engine (`+0xC0` = reg << 8 | data, `+0xC8` strobe, `+0xC4` bit 31 busy, echo checked within
      2 ms) by `cs2k_steer`: one write per 125 ms toward the target, moving the commanded ratio ≤ 0.625 ppm per write
      (5 ppm/s, `DCLK_SLEW_PPM_S`; ≤ 3 LSB per write at R₀ = 2.0), so the ratio **never steps** (PLAN D15, 2026-10-20).
-     A media load gives the loop a new phase reference (it keeps its correction) instead of a reset. R₀ is a daemon option (`--cs2k-r0`, default 0x00200000): **the PRO1's CS2000 reference
+     A media load gives the loop a new phase reference (it keeps its correction) instead of a reset, taken from the
+     first `fs_phase` snapshot whose edge count has moved past the one read right after the load (until a desk edge
+     follows the load, the latch still holds the old count). R₀ is a daemon option (`--cs2k-r0`, default 0x00200000): **the PRO1's CS2000 reference
      and ratio are not known (hardware)**.
    - **Leader:** the CS2000 stays at R₀ and the loop drives the time of day instead: f = +u × 1000 ppb, so the PTP time
      the leader sends follows the desk's own sample clock.

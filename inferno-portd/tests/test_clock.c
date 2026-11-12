@@ -24,6 +24,7 @@ static uint64_t vt = 5000000000ull;
 static uint64_t vnow(void) { return vt; }
 
 static port_t A, B;
+static double desk_ppm = 40.0, acq_ppm_s;   /* B's CS2000 reference error (B tracks -desk_ppm), its acquisition glide */
 static model_wire_t *W;
 
 /* B every 125 ms: the ratio in force (the model's), the desk clock's mode and lock, the audio phase, the model's desk
@@ -71,10 +72,10 @@ static void setup(int fail_leader, int8_t log_sync)
     port_defaults(&B);
     A.n = 0; snprintf(A.desk, sizeof(A.desk), "FOH"); A.mac[5] = 0x11;
     B.n = 1; snprintf(B.desk, sizeof(B.desk), "MON"); B.mac[5] = 0x22;
-    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0 };
-    portd_opts_t ob = { 1, 1, 1, fail_leader, R0, PTP_ROLE_FOLLOWER, 1, log_sync, 0 };
+    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0 };
+    portd_opts_t ob = { 1, 1, 1, fail_leader, R0, PTP_ROLE_FOLLOWER, 1, log_sync, 0, acq_ppm_s };
     CHECK(portd_start(&A, mk(0, 1, 0.0, 0.0, 1760000000ull * 1000000000ull, 0), &oa) == 0);
-    CHECK(portd_start(&B, mk(1, 2, 50.0, 40.0, 1760000003ull * 1000000000ull + 123456789ull, 1), &ob) == 0);
+    CHECK(portd_start(&B, mk(1, 2, 50.0, desk_ppm, 1760000003ull * 1000000000ull + 123456789ull, 1), &ob) == 0);
     ns = 0;
 }
 
@@ -155,7 +156,7 @@ static double settle(void)
     dclock_get_stats(B.clk, &c);
     double r = ratio_ppm();
     CHECKF(c.mode == DCLK_FOLLOWER && c.locked, "mode %d locked %d", c.mode, c.locked);
-    CHECKF(fabs(r + 40.0) < 1.0 && fabs(c.audio_phase) < 0.5, "ratio %.2f ppm, phase %.3f", r, c.audio_phase);
+    CHECKF(fabs(r + desk_ppm) < 1.0 && fabs(c.audio_phase) < 0.5, "ratio %.2f ppm, phase %.3f", r, c.audio_phase);
     return r;
 }
 
@@ -307,6 +308,56 @@ static void test_rate_change_stale(void)
     teardown();
 }
 
+/* issue 007: power-up with the desk clock dppm off the leader. The loop starts DCLK_SETTLE_NS into the PTP's lock;
+ * from there: the time until the ratio stays within 5 ppm of the one that tracks (frequency: the PTP's own settling
+ * moves the media clock up to 4 ppm meanwhile, which the desk follows), the time until the phase
+ * also stays within 0.05 samples of the loop's reference (phase), the largest |phase|, the largest move of the desk
+ * against the media clock, the slips. The phase's tail is the PTP's own settling after its lock (the media clock moves
+ * a few ppm for a few tens of seconds): the 0 ppm start shows it alone */
+static void test_acquisition(double dppm, double acq, double max_freq_s, double max_phase_s, double max_peak, int max_slips)
+{
+    printf("- power-up, desk clock %+.0f ppm off the leader, acquisition glide %s%.0f ppm/s: frequency within %.1f s, phase "
+           "within %.1f s\n", dppm, acq ? "" : "(default) ", acq ? acq : DCLK_SLEW_PPM_S, max_freq_s, max_phase_s);
+    desk_ppm = dppm; acq_ppm_s = acq;
+    setup(0, -2);
+    run(150.0);
+    /* the lock the loop starts on: the last one taken (a pull-in may lose it once); the loop's first tick within a
+     * period of DCLK_SETTLE_NS into it */
+    int l = ns;
+    while (l > 0 && S[l - 1].mode == DCLK_FOLLOWER && S[l - 1].locked) l--;
+    CHECKF(l < ns, "never locked");
+    if (l < ns) {
+        uint64_t t0 = S[l].t + DCLK_SETTLE_NS + DCLK_PERIOD_NS, t_set = t0, t_freq = t0;
+        double peak = 0, exc = 0, a0 = 0, locked = 0;
+        int have = 0;
+        for (int i = l; i < ns; i++) {
+            if (S[i].t < t0) continue;
+            if (!have) { a0 = S[i].abs; have = 1; }
+            if (fabs(S[i].phase) > peak) peak = fabs(S[i].phase);
+            if (fabs(S[i].abs - a0) > exc) exc = fabs(S[i].abs - a0);
+            if (fabs(S[i].ppm + dppm) > 5.0) t_freq = t_set = S[i].t;
+            if (fabs(S[i].phase) > 0.05) t_set = S[i].t;
+            if (S[i].t >= vt - 60000000000ull && fabs(S[i].phase) > locked) locked = fabs(S[i].phase);
+        }
+        double settle_s = (double)(t_set - t0) * 1e-9, freq_s = (double)(t_freq - t0) * 1e-9;
+        int sl = slips(t0);
+        printf("  after the loop's start: frequency %.2f s, phase %.2f s, phase peak %.3f samples, desk moved %.3f samples against the media "
+               "clock, %d slips; last 60 s: phase <= %.4f samples, ratio %.2f ppm\n", freq_s, settle_s, peak, exc, sl, locked, ratio_ppm());
+        CHECKF(freq_s <= max_freq_s, "frequency after %.2f s", freq_s);
+        CHECKF(settle_s <= max_phase_s, "phase after %.2f s", settle_s);
+        CHECKF(peak <= max_peak, "phase peak %.3f samples", peak);
+        CHECKF(sl <= max_slips, "%d slips", sl);
+        CHECKF(locked < 0.05, "locked phase %.4f samples", locked);
+        CHECKF(fabs(ratio_ppm() + dppm) < 1.0, "ratio %.2f ppm", ratio_ppm());
+    }
+    uint32_t ms = max_step();
+    /* the glide's writes move acq x 0.125 ppm (plus the dither's carry); the default's are the usual limit */
+    uint32_t lim = acq ? (uint32_t)ceil((double)R0 * acq * 0.125e-6) + 1 : cs2k_max_step(R0);
+    CHECKF(ms <= lim, "largest write %u LSB (limit %u)", ms, lim);
+    teardown();
+    desk_ppm = 40.0; acq_ppm_s = 0;
+}
+
 int main(void)
 {
     g_log_level = getenv("V") ? LOG_DEBUG : LOG_WARN;
@@ -317,5 +368,13 @@ int main(void)
     test_go_leader();
     test_clockfail_runtime();
     test_rate_change_stale();
+    /* the PRO1's default: the glide at the loop's 5 ppm/s (the phase moves with it), then locked */
+    test_acquisition(50.0, 0, 12.0, 30.0, 13.0, 12);
+    test_acquisition(-50.0, 0, 12.0, 30.0, 13.0, 12);
+    test_acquisition(0.0, 0, 0.0, 15.0, 0.3, 0);    /* as before the acquisition */
+    test_acquisition(5.0, 0, 0.0, 40.0, 1.0, 0);    /* below DCLK_ACQ_MIN_PPM: the phase loop alone, as before */
+    /* a device with a frame or two of elastic buffer: a fast glide */
+    test_acquisition(50.0, 200.0, 2.0, 40.0, 1.0, 1);
+    test_acquisition(-50.0, 200.0, 2.0, 40.0, 1.0, 1);
     return t_done("test_clock");
 }

@@ -463,7 +463,13 @@ follower port's when the desk follows an Inferno port, else the first Inferno po
 2. **Audio loop:** phase φ = desk frames − media frames from `fs_phase.v`, every 125 ms; a type-2 PLL, ωn = 2π·0.02 Hz,
    ζ = 0.7: u = kp·(φ − φ₀) + ∫ki·(φ − φ₀), kp = 2ζωn/K, ki = ωn²/K, K = fs × 10⁻⁶ frames/s per ppm (48 kHz: 3.7 ppm per
    frame, 0.33 ppm per frame-second), u limited to ±250 ppm and 5 ppm/s (no audible pitch steps). φ₀ = the phase when the
-   loop starts (it holds the phase, not a sample index).
+   loop starts (it holds the phase, not a sample index). A follower's first start (it has never tracked its source)
+   begins with a **frequency acquisition**: the output held, the phase's slope over 0.25 s (`DCLK_ACQ_NS`) is the
+   frequency error. Up to 10 ppm it is left to the phase loop (2 s into its lock the PTP may still move the media clock
+   a few ppm); above it the output glides there (`--audio-acquire-ppm-s`, default 5 ppm/s, the loop's own limit) and
+   measures again while the error is above 1 ppm (up to 4 rounds: the PTP settles meanwhile). The
+   phase found at the end is φ₀, the integrator at the output: the phase loop starts locked in frequency, with nothing
+   to pull back. Later starts (the source back, a rate change) start from the ratio tracked last, as before.
    - **Follower (PRO1):** the CS2000 ratio R = R₀ × (1 − u·10⁻⁶), 12.20 fixed point, sigma-delta dithered (one LSB =
      2⁻²⁰ = 0.48 ppm at R₀ = 2.0); written as Freeze (0x05 ← 0x09), Ratio 0x06…0x09 MSB first, unfreeze (0x05 ← 0x01)
      through the IO command engine (`+0xC0` = reg << 8 | data, `+0xC8` strobe, `+0xC4` bit 31 busy, echo checked within

@@ -11,6 +11,7 @@ typedef struct {
     int      ptp_role, ptp_steer;
     int8_t   log_sync;
     uint8_t  stratum;
+    double   acq_ppm_s;        /* --audio-acquire-ppm-s (0: DCLK_SLEW_PPM_S) */
 } portd_opts_t;
 
 int  portd_start(port_t *p, hw_t *hw, const portd_opts_t *o);

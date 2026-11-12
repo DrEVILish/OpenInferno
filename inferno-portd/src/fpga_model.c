@@ -492,7 +492,7 @@ static uint32_t inf_rd(model_t *m, uint32_t o)
     case INF_LATENCY: return m->latency & 0xFF0103;
     case INF_LAT_STATUS: return ((uint32_t)fpp_auto(m) << 16) | ((uint32_t)lat_offset(m) & 0x7FF);
     case INF_JB_GEOM: return m->media_fs > 50000 ? ((32u << 16) | 512u) : ((64u << 16) | 256u);
-    case INF_CAPS: return ((uint32_t)NRXF << 24) | ((uint32_t)NTXF << 16) | ((uint32_t)MAXFCH << 8) | MAX_CH;
+    case INF_CAPS: return m->c.caps ? m->c.caps : ((uint32_t)NRXF << 24) | ((uint32_t)NTXF << 16) | ((uint32_t)MAXFCH << 8) | MAX_CH;
     case INF_CAPS2: return ((uint32_t)NR_FRAMES << 16) | ((uint32_t)(m->c.maxlat & 3) << 8) | MAX_FPP;
     case INF_TX_PACKETS: return m->tx_packets;
     case INF_TX_OVERRUNS: return m->tx_overruns;

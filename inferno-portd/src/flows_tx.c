@@ -110,7 +110,7 @@ static int tx_add_unicast(port_t *p, const char *host, const char *flow, uint32_
             return f;
         }
     if (tx_load_bps(p, nch, fpp, bps) > TX_BUDGET_BPS) { *code = FC_TOO_MANY; LOGW("flow request refused: over the 95 Mb/s budget"); return -1; }
-    for (int f = 0; f < NTXF; f++)
+    for (int f = 0; f < p->caps_txf; f++)
         if (!p->tx[f].used) {
             txflow_t *t = &p->tx[f];
             memset(t, 0, sizeof(*t));
@@ -169,11 +169,11 @@ int flowctl_handle(port_t *p, uint32_t sip, const uint8_t *req, int len, uint8_t
         uint16_t rport = get16(req + rem_off + 2);
         uint32_t rip = get32(req + rem_off + 4);
         int16_t ch[MAXFCH];
-        int bad = nch > MAXFCH;
+        int bad = nch > p->caps_fch;
         for (int i = 0; i < nch && i < MAXFCH; i++) {
             uint16_t id = get16(c + 16 + 2 * i);
             ch[i] = id ? (int16_t)(id - 1) : -1;
-            if (id && id - 1 >= p->channels) bad = 1;
+            if (id && id - 1 >= port_tx_channels(p)) bad = 1;
         }
         char ipb[16];
         LOGI("%s requests flow %s: %d ch, %u Hz, %u bit, fpp %d, to %s:%u", host, flow, nch, rate, bits, fpp, ip_str(rip, ipb), rport);
@@ -204,14 +204,14 @@ int flowctl_handle(port_t *p, uint32_t sip, const uint8_t *req, int len, uint8_t
         if (clen < 8) return 0;
         if (!handle_flow(p, c, &f)) { code = FC_FLOW_NOT_FOUND; break; }
         int nch = get16(c + 6);
-        if (nch < 1 || nch > MAXFCH || 8 + 2 * nch > clen) { code = FC_BAD_REQUEST; break; }
+        if (nch < 1 || nch > p->caps_fch || 8 + 2 * nch > clen) { code = FC_BAD_REQUEST; break; }
         txflow_t *t = &p->tx[f];
         double load = tx_load_bps(p, nch, t->fpp, t->bps) - flow_bps(p, t->nch, t->fpp, t->bps);
         if (load > TX_BUDGET_BPS) { code = FC_TOO_MANY; break; }
         t->nch = nch;
         for (int i = 0; i < MAXFCH; i++) {
             uint16_t id = i < nch ? get16(c + 8 + 2 * i) : 0;
-            t->ch[i] = id && id - 1 < p->channels ? (int16_t)(id - 1) : -1;
+            t->ch[i] = id && id - 1 < port_tx_channels(p) ? (int16_t)(id - 1) : -1;
         }
         if (t->programmed) tx_program(p, f);   /* a table rewrite restarts the flow (inferno.md 11.10) */
         break;
@@ -257,7 +257,7 @@ static void rev_name(uint32_t ip, char *out, size_t sz)
 
 int txflow_create_mcast(port_t *p, int f, const int16_t *ch, int nch)
 {
-    if (f < 0 || f >= NTXF || p->tx[f].used || nch < 1 || nch > MAXFCH) return -1;
+    if (f < 0 || f >= p->caps_txf || p->tx[f].used || nch < 1 || nch > p->caps_fch) return -1;
     if (tx_load_bps(p, nch, 0, 3) > TX_BUDGET_BPS) { LOGW("multicast flow refused: over the budget"); return -1; }
     txflow_t *t = &p->tx[f];
     memset(t, 0, sizeof(*t));

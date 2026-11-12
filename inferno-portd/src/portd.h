@@ -15,7 +15,8 @@
 #include "mdns.h"
 #include "net.h"
 
-#define MAX_CH      64      /* columns per port at 48 kHz (32 at 96 kHz) */
+/* compile-time maxima: they size the tables; the build's INF_CAPS values (port_t caps_*) are the run-time limits */
+#define MAX_CH      64      /* columns per port at 48 kHz (half at 96 kHz) */
 #define NTXF        16      /* FPGA TX flows */
 #define NRXF        16      /* FPGA RX flows */
 #define MAXFCH      32      /* channels per flow, either way */
@@ -104,7 +105,7 @@ typedef struct port {
     uint32_t cfg_ip, cfg_mask, cfg_gw;
     int      fs;
     int      lat_mode;               /* 0..3 = 0.5 / 1 / 2 / 5 ms */
-    int      channels;               /* each way */
+    int      channels;               /* columns: the RX channels; TX channels = port_tx_channels() */
     int      maxlat, caps_ch, caps_fch, caps_txf, caps_rxf;
     char     txname[MAX_CH][32], rxname[MAX_CH][32];
     char     state_path[256];
@@ -126,6 +127,9 @@ typedef struct port {
     int      changed_rx[MAX_CH];     /* channels for the next change notification */
     int      any_changed;
 } port_t;
+
+/* a build without TX flows (receive-only) has no TX channels */
+static inline int port_tx_channels(const port_t *p) { return p->caps_txf ? p->channels : 0; }
 
 /* identity and adverts (port.c) */
 void port_defaults(port_t *p);

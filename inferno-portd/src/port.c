@@ -111,7 +111,7 @@ static void adv_chan(port_t *p, int k, const char *chname, int is_default)
     txt(&s, "en=24");
     txt(&s, "latency_ns=%u", port_latency_ns(p));
     txt(&s, "fpp=%d,%d", FPP_MAX_ADV, FPP_MIN);
-    txt(&s, "nchan=%d", MIN(g_adv_nchan, MIN(p->channels, MAXFCH)));
+    txt(&s, "nchan=%d", MIN(g_adv_nchan, MIN(p->channels, p->caps_fch)));
     if (is_default) txt(&s, "default");
     int bid, cib;
     if (chan_bundle(p, k, &bid, &cib)) txt(&s, "b.%d=%d", bid, cib + 1);
@@ -201,7 +201,7 @@ void port_advertise(port_t *p)
     txt(&s, "%s", "");
     txt(&s, "%s", "");
     mdns_add(p->mdns, &s);
-    for (int k = 0; k < p->channels; k++) port_adv_channel(p, k);
+    for (int k = 0; k < port_tx_channels(p); k++) port_adv_channel(p, k);
     for (int f = 0; f < NTXF; f++) if (p->tx[f].used && p->tx[f].multicast && p->tx[f].mc_state == 1) port_adv_bundle(p, f);
     p->advertised = 1;
 }
@@ -254,7 +254,7 @@ int port_set_rate(port_t *p, int fs)
     sub_reset_rate(p);
     port_wr(p->hw, INF_CTRL, 0);
     p->fs = fs;
-    int lim = MIN(p->caps_ch, fs > 50000 ? MAX_CH / 2 : MAX_CH);
+    int lim = fs > 50000 ? p->caps_ch / 2 : p->caps_ch;   /* 96 kHz plays half the build's columns */
     if (p->channels > lim) p->channels = lim;
     txflows_rate_changed(p);
     if (p->clk) dclock_set_rate(p->clk, fs);
@@ -279,7 +279,7 @@ void port_rename(port_t *p, const char *desk)
 
 void port_rename_tx(port_t *p, int k, const char *name)
 {
-    if (k < 0 || k >= p->channels) return;
+    if (k < 0 || k >= port_tx_channels(p)) return;
     char nm[32];
     sanitize_chname(name, nm, sizeof(nm));
     if (!nm[0]) snprintf(nm, sizeof(nm), "%02d", k + 1);

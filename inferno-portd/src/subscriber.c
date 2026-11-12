@@ -287,7 +287,7 @@ static int resolve_chan(port_t *p, const sub_t *s, advch_t *a)
 
 static int free_rxflow(const port_t *p)
 {
-    for (int f = 0; f < NRXF; f++) if (!p->rx[f].used) return f;
+    for (int f = 0; f < p->caps_rxf; f++) if (!p->rx[f].used) return f;
     return -1;
 }
 
@@ -295,6 +295,26 @@ static int shift_frames(const port_t *p, uint32_t their_ns)
 {
     int their = (int)((uint64_t)their_ns * (uint64_t)p->fs / 1000000000ull), ours = port_offset_frames(p);
     return their > ours ? their - ours : 0;
+}
+
+/* inferno_rx drops a packet reaching more than JB_GEOM frames past the playout point as early; one that arrives as soon
+ * as its last frame exists reaches our offset + SHIFT past it (= the larger of the two latencies), so that must fit */
+int sub_latency_fits(const port_t *p, uint32_t their_ns)
+{
+    return shift_frames(p, their_ns) + port_offset_frames(p) <= (int)(port_rd(p->hw, INF_JB_GEOM) & 0xFFFF);
+}
+
+/* Dante refuses a subscription whose latency the receiver cannot play (status "channel latency"): no flow is requested
+ * (the transmitter's packets would all be dropped as early); the channel retries every 10 s in case the peer changes */
+static int latency_ok(port_t *p, int k, uint32_t their_ns)
+{
+    if (sub_latency_fits(p, their_ns)) return 1;
+    if (p->sub[k].status != SUB_LATENCY)
+        LOGW("RX %d: %s@%s needs %u us of latency, over the %u frames our jitter buffer holds: not subscribed", k + 1,
+             p->sub[k].txch, p->sub[k].txhost, their_ns / 1000, port_rd(p->hw, INF_JB_GEOM) & 0xFFFF);
+    set_status(p, k, SUB_LATENCY);
+    p->sub[k].next_try = g_now() + 10000000000ull;
+    return 0;
 }
 
 static void attach_mcast(port_t *p, int k, const advch_t *a)
@@ -309,7 +329,8 @@ static void attach_mcast(port_t *p, int k, const advch_t *a)
     txt_int(p, fq, "nchan", &nch);
     if (!txt_int(p, fq, "enc", &enc)) txt_int(p, fq, "en", &enc);
     txt_int(p, fq, "latency_ns", &lat);
-    if (nch < 1 || nch > MAXFCH || a->cib >= nch) { LOGW("bundle %s: %ld channels unsupported", fq, nch); return; }
+    if (nch < 1 || nch > p->caps_fch || a->cib >= nch) { LOGW("bundle %s: %ld channels unsupported", fq, nch); return; }
+    if (!latency_ok(p, k, (uint32_t)lat)) return;
     int f = -1;
     for (int i = 0; i < NRXF; i++) if (p->rx[i].used && p->rx[i].multicast && p->rx[i].group == grp && p->rx[i].gport == port) f = i;
     if (f < 0) {
@@ -355,7 +376,8 @@ static void resolve(port_t *p, uint64_t now)
         if (!strcasecmp(s->txhost, p->name)) { s->next_try = now + 5000000000ull; continue; }   /* ourselves */
         advch_t a;
         if (!resolve_chan(p, s, &a)) { s->next_try = now + 1000000000ull; continue; }
-        if (a.bundle) { attach_mcast(p, k, &a); if (s->flow < 0) s->next_try = now + 1000000000ull; continue; }
+        if (a.bundle) { attach_mcast(p, k, &a); if (s->flow < 0 && s->status != SUB_LATENCY) s->next_try = now + 1000000000ull; continue; }
+        if (!latency_ok(p, k, a.latency_ns)) continue;
         /* an existing flow from the same server: the channel already in a free slot, or a free slot to update */
         int done = 0, hold = 0;
         for (int f = 0; f < NRXF && !done; f++) {
@@ -408,12 +430,12 @@ static void resolve(port_t *p, uint64_t now)
         for (int i = 0; i < nb; i++) if (keep[i]) { batch[m] = batch[i]; ads[m] = ads[i]; m++; }
         nb = m;
     }
-    /* new flows: per server, chunks of up to min(advertised nchan, MAXFCH) channels (upstream: min(nchan, 8)) */
+    /* new flows: per server, chunks of up to min(advertised nchan, caps_fch) channels (upstream: min(nchan, 8)) */
     int taken[MAX_CH] = { 0 };
     for (int i = 0; i < nb; i++) {
         if (taken[i]) continue;
         const advch_t *a0 = &ads[i];
-        int per = MIN(MAX(a0->nchan, 1), MAXFCH);
+        int per = MIN(MAX(a0->nchan, 1), p->caps_fch);
         int f = free_rxflow(p);
         if (f < 0) { set_status(p, batch[i], SUB_TOO_MANY); p->sub[batch[i]].next_try = now + 10000000000ull; continue; }
         rxflow_t *r = &p->rx[f];

@@ -6,12 +6,14 @@ TASKSET ?= nice -n 10
 B := build
 RTL := rtl/rmii_tx.v rtl/rmii_rx.v rtl/inferno_tx.v rtl/inferno_rx.v rtl/cpu_pktq.v
 CAP := 48_8_0 48_8_1 48_8_2 48_8_3 64_16_0 64_16_1 64_16_2 64_16_3 64_32_0 32_16_3_96k
-.PHONY: check sim xcheck control cli clean
-check: xcheck control cli sim
+.PHONY: check sim xcheck control cli amu clean
+check: xcheck control cli amu sim
 cli:
 	$(MAKE) -C inferno-portd check-cli
 control:
 	$(MAKE) -C inferno-portd check-unit
+amu:
+	@$(if $(MUSL_CC),$(MAKE) -C inferno-portd check-amu,echo "SKIP amu: set MUSL_CC")
 $(B):
 	mkdir -p $@
 $(B)/tb_inferno.vvp: tb/tb_inferno.v $(wildcard rtl/*) | $(B)

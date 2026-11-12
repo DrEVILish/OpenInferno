@@ -488,7 +488,8 @@ follower port's when the desk follows an Inferno port, else the first Inferno po
    Sync every 2⁻² s (`--log-sync`), two-step, TTL 1, DSCP CS7.
 
 ### 9.4 `inferno-portd` (written 2026-10-19: host-tested, no hardware)
-`inferno-portd/` (C11, libc only; `make` x86, `make ppc` static PowerPC e300c3 for the MPC8315). One process per
+`inferno-portd/` (C11, libc only; `make` x86, `make ppc` static PowerPC e300c3 glibc for modern kernels, not a Pro1 binary;
+`make amu MUSL_CC=<PowerPC musl-gcc>` the Pro1 AMU build: MPC8315, Linux 2.6.29, see `check-amu` below). One process per
 Inferno port. Its pieces and where they come from:
 
 | File | Does | From |
@@ -525,6 +526,13 @@ advertised `nchan=16` (option `--nchan`), `fpp=32,2`, `latency_ns` = the port's 
   holdover gaps from 4 to 12 s (no stuck holdover), GO LEADER for 20 s and 60 s and the return, `clockfail` at run
   time; no CS2000 write moves the ratio by more than the slew step.
 - `check-ppc`: the same unit / in-process / clock tests built for the e300c3 and run big-endian under qemu-ppc-static.
+- `check-amu` (in `make check` when `MUSL_CC` is set, else `SKIP amu`): the Pro1 build. Debian's static PowerPC glibc
+  needs Linux >= 3.2 and the AMU runs 2.6.29, so `amu` links musl instead (musl 1.2.6, static, over
+  `gcc-powerpc-linux-gnu`, hard float; `-O2 -static -mcpu=e300c3 -mlong-double-64 -no-pie`, objects in `build/amu`).
+  It runs the `check-ppc` tests and `inferno-portd --port 0` (must exit 2) under `qemu-ppc -r 2.6.29 -cpu e300c3`
+  (`AMU_QEMU`), then `AMU_CHECK` (a static-binary checker script) when set. `-r` only fakes the kernel version (qemu
+  still runs the glibc `ppc` build, so it cannot catch this): this is not a real-AMU run. The source must not include
+  `<linux/...>` headers (the musl sysroot has none; `check-unit` greps for them).
 - `status` keys include `clock_fail=`, `cs2k_ppm=` and `ptp_leader=` (was `ptp_master=`).
 
 ## 10. Milestones

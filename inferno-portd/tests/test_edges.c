@@ -194,8 +194,9 @@ static uint32_t test_caps_read(hw_t *h, uint32_t addr)
 }
 static void test_capabilities(void)
 {
-    TEST("incompatible FPGA flow capacities are rejected before configuration");
-    const uint32_t bad[] = {0x10102000u, 0x10102041u, 0x10101040u, 0x10082040u, 0x08102040u};
+    TEST("FPGA capacities beyond the daemon's tables, or with no flows, are rejected before configuration");
+    /* INF_CAPS: 31:24 RX flows, 23:16 TX flows, 15:8 channels per flow, 7:0 columns */
+    const uint32_t bad[] = {0x10102000u, 0x10102041u, 0x10102140u, 0x10100040u, 0x10112040u, 0x11102040u, 0x00002040u};
     for (size_t i = 0; i < ARRAY_LEN(bad); i++) {
         model_cfg_t m = {0}; m.phy_fd = -1; m.maxlat = 3; m.port_base = m.clock_base = 0x1000;
         m.dclk_base = m.cs2k_base = 0xffffffffu;
@@ -356,6 +357,76 @@ static void legacy_query(net_t *n, int peer, int port, int id)
     put16(u,(uint16_t)port); put16(u + 2,5353); put16(u + 4,(uint16_t)(8 + pos));
     stamp_t ts = {0}; net_input(n,frame,42 + pos,&ts);
 }
+/* a port on a model whose INF_CAPS is caps, at rate fs */
+static int setup_caps(uint32_t caps, int fs)
+{
+    port_defaults(&p); p.cfg_ip = IP4(192, 0, 2, 10); p.fs = fs;
+    model_cfg_t m = {0}; m.phy_fd = -1; m.maxlat = 3; m.caps = caps;
+    m.port_base = m.clock_base = 0x1000; m.dclk_base = m.cs2k_base = 0xffffffffu;
+    portd_opts_t o = {0}; o.log_sync = -2;
+    return portd_start(&p, model_open(&m), &o);
+}
+static int arc(uint16_t op, const uint8_t *c, int clen, uint8_t *r, int max)
+{
+    uint8_t q[64];
+    return arc_handle(&p, q, rr_make(q, 0x27ff, 0x1234, op, 0, c, clen), r, max);
+}
+/* _netaudio-chan answers to one unicast PTR query (one per default-named TX channel) */
+static uint64_t chan_answers(void)
+{
+    for (int i = 0; i < 2200; i++) { now += 1000000ull; port_tick(&p, now); }   /* the announcements */
+    mdns_stats_t a, b; mdns_get_stats(p.mdns, &a);
+    legacy_query(p.net, 11, 6000, 1);
+    for (int i = 0; i < 100; i++) { now += 10000000ull; port_tick(&p, now); }
+    mdns_get_stats(p.mdns, &b);
+    return b.tx_responses - a.tx_responses;
+}
+static void test_small_builds(void)
+{
+    uint8_t r[1500]; int code;
+    static const uint8_t pg1[4] = { 0, 0, 0, 1 };
+    TEST("full build: 64 TX channels advertised (the reference for the smaller builds)");
+    CHECK(setup_caps(0, 48000) == 0); CHECK(chan_answers() == 64); teardown();
+
+    TEST("receive-only build (2 RX flows x 8 ch, 2 columns, 0 TX flows): starts with no TX channels or TX flows");
+    CHECK(setup_caps(0x02000802u, 48000) == 0);
+    CHECK(p.channels == 2 && port_tx_channels(&p) == 0);
+    CHECK(arc(0x1000, NULL, 0, r, sizeof(r)) == 44);
+    CHECK(get16(r + 12) == 0 && get16(r + 14) == 2 && get16(r + 18) == 2);
+    CHECK(get16(r + 22) == 0 && get16(r + 24) == 2 && get16(r + 26) == 2);
+    arc(0x2000, pg1, 4, r, sizeof(r)); CHECK(r[11] == 0);   /* no TX channels listed */
+    arc(0x2200, pg1, 4, r, sizeof(r)); CHECK(r[11] == 0);
+    CHECK(request(1, 8, 50000, &code) < 0 && code != 1);
+    CHECK(txflow_create_mcast(&p, 0, (const int16_t[]){0}, 1) == -1);
+    int used = 0; for (int f = 0; f < NTXF; f++) used += p.tx[f].used; CHECK(used == 0);
+    CHECK(chan_answers() == 0);
+    CHECK(sub_subscribe(&p, 1, "01", "peer") == 0 && sub_subscribe(&p, 2, "01", "peer") == -1);
+    teardown();
+
+    TEST("small build (1 TX / 2 RX flows, 8 ch per flow, 2 columns): ARC reports it, larger requests are refused");
+    CHECK(setup_caps(0x02010802u, 48000) == 0);
+    CHECK(arc(0x1000, NULL, 0, r, sizeof(r)) == 44);
+    CHECK(get16(r + 12) == 2 && get16(r + 14) == 2 && get16(r + 18) == 2);
+    CHECK(get16(r + 22) == 1 && get16(r + 24) == 2 && get16(r + 26) == 4);
+    CHECK(chan_answers() == 2);
+    char out[128];
+    CHECK(ctl_exec(&p, "channels 3", out, sizeof(out)) == -1);
+    request(9, 8, 50000, &code); CHECK(code == 0x0302);   /* more than 8 channels per flow */
+    request(3, 8, 50000, &code); CHECK(code == 0x0302);   /* TX channel 3 of 2 */
+    CHECK(request(2, 8, 50000, &code) >= 0);
+    CHECK(request(1, 8, 50001, &code) < 0 && code == 0x0315);   /* the one TX flow is taken */
+    CHECK(txflow_create_mcast(&p, 1, (const int16_t[]){0}, 1) == -1);
+    teardown();
+
+    TEST("96 kHz plays half the build's columns, not half of MAX_CH");
+    CHECK(setup_caps(0x10102028u, 96000) == 0); CHECK(p.channels == 20);   /* 40 columns */
+    CHECK(((port_rd(p.hw, INF_CTRL) >> 8) & 0x7F) == 20);
+    char o2[64]; CHECK(ctl_exec(&p, "channels 21", o2, sizeof(o2)) == -1);
+    teardown();
+    CHECK(setup_caps(0x02010802u, 48000) == 0);
+    CHECK(port_set_rate(&p, 96000) == 0); CHECK(p.channels == 1);
+    teardown();
+}
 static void test_distinct_discovery_clients(void)
 {
     TEST("pending unicast replies retain distinct clients, ports and transaction IDs");
@@ -379,5 +450,6 @@ int main(void)
     test_mac_refresh(); test_control_backpressure();
     test_control_eof(); test_control_errors(); test_capabilities(); test_discovery_flood();
     test_cancel_pending(); test_latency_transitions(); test_latency_fit(); test_rate_transitions(); test_distinct_discovery_clients();
+    test_small_builds();
     return t_done("test_edges");
 }

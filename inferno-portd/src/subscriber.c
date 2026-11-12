@@ -287,7 +287,7 @@ static int resolve_chan(port_t *p, const sub_t *s, advch_t *a)
 
 static int free_rxflow(const port_t *p)
 {
-    for (int f = 0; f < NRXF; f++) if (!p->rx[f].used) return f;
+    for (int f = 0; f < p->caps_rxf; f++) if (!p->rx[f].used) return f;
     return -1;
 }
 
@@ -329,7 +329,7 @@ static void attach_mcast(port_t *p, int k, const advch_t *a)
     txt_int(p, fq, "nchan", &nch);
     if (!txt_int(p, fq, "enc", &enc)) txt_int(p, fq, "en", &enc);
     txt_int(p, fq, "latency_ns", &lat);
-    if (nch < 1 || nch > MAXFCH || a->cib >= nch) { LOGW("bundle %s: %ld channels unsupported", fq, nch); return; }
+    if (nch < 1 || nch > p->caps_fch || a->cib >= nch) { LOGW("bundle %s: %ld channels unsupported", fq, nch); return; }
     if (!latency_ok(p, k, (uint32_t)lat)) return;
     int f = -1;
     for (int i = 0; i < NRXF; i++) if (p->rx[i].used && p->rx[i].multicast && p->rx[i].group == grp && p->rx[i].gport == port) f = i;
@@ -430,12 +430,12 @@ static void resolve(port_t *p, uint64_t now)
         for (int i = 0; i < nb; i++) if (keep[i]) { batch[m] = batch[i]; ads[m] = ads[i]; m++; }
         nb = m;
     }
-    /* new flows: per server, chunks of up to min(advertised nchan, MAXFCH) channels (upstream: min(nchan, 8)) */
+    /* new flows: per server, chunks of up to min(advertised nchan, caps_fch) channels (upstream: min(nchan, 8)) */
     int taken[MAX_CH] = { 0 };
     for (int i = 0; i < nb; i++) {
         if (taken[i]) continue;
         const advch_t *a0 = &ads[i];
-        int per = MIN(MAX(a0->nchan, 1), MAXFCH);
+        int per = MIN(MAX(a0->nchan, 1), p->caps_fch);
         int f = free_rxflow(p);
         if (f < 0) { set_status(p, batch[i], SUB_TOO_MANY); p->sub[batch[i]].next_try = now + 10000000000ull; continue; }
         rxflow_t *r = &p->rx[f];

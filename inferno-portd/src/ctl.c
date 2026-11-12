@@ -127,7 +127,7 @@ int ctl_exec(port_t *p, const char *line, char *out, size_t sz)
         outf(out, sz, "ok\n"); return 0;
     }
     if (!strcmp(cmd, "channels") && n >= 2) {
-        int k = atoi(a), lim = p->fs > 50000 ? MAX_CH / 2 : MAX_CH;
+        int k = atoi(a), lim = p->fs > 50000 ? p->caps_ch / 2 : p->caps_ch;
         if (k < 1 || k > lim) { outf(out, sz, "err 1..%d\n", lim); return -1; }
         port_unadvertise(p);
         p->channels = k;

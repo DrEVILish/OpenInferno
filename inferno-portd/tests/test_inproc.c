@@ -23,15 +23,16 @@ static uint64_t vnow(void) { return vt; }
 static port_t A, B;
 
 static model_wire_t *W;
-static hw_t *mk(int side, int id, double ppm, uint64_t tod0)
+static hw_t *mk_jb(int side, int id, double ppm, uint64_t tod0, int jb)
 {
     model_cfg_t m;
     memset(&m, 0, sizeof(m));
     m.id = id; m.xtal_ppm = ppm; m.maxlat = 3;
     m.port_base = 0x1000; m.clock_base = 0x1000; m.dclk_base = 0xFFFFFFFFu; m.cs2k_base = 0xFFFFFFFFu;
-    m.phy_fd = -1; m.wire = W; m.wire_side = side; m.wire_delay_ns = 5000; m.tod_start_ns = tod0;
+    m.phy_fd = -1; m.wire = W; m.wire_side = side; m.wire_delay_ns = 5000; m.tod_start_ns = tod0; m.jb_frames = jb;
     return model_open(&m);
 }
+static hw_t *mk(int side, int id, double ppm, uint64_t tod0) { return mk_jb(side, id, ppm, tod0, 0); }
 
 static void run(double seconds)
 {
@@ -48,6 +49,56 @@ static int receiving(const port_t *p, int from, int to)
     int n = 0;
     for (int k = from; k < to; k++) n += p->sub[k].status == SUB_RX_UNICAST || p->sub[k].status == SUB_RX_MULTICAST;
     return n;
+}
+
+static int flows(const port_t *p, int tx)
+{
+    int n = 0;
+    for (int f = 0; f < NRXF; f++) n += tx ? p->tx[f].used : p->rx[f].used;
+    return n;
+}
+
+/* B plays from a 96-frame buffer at 0.5 ms (24 frames): A at 5 ms (240) cannot be played, 2 ms (96) just can */
+static void latency_beyond_buffer(void)
+{
+    portd_stop(&A); A.hw->ops->close(A.hw);
+    portd_stop(&B); B.hw->ops->close(B.hw);
+    W = model_wire_new();
+    port_defaults(&A);
+    port_defaults(&B);
+    A.n = 0; snprintf(A.desk, sizeof(A.desk), "FOH"); A.mac[5] = 0x31;
+    B.n = 1; snprintf(B.desk, sizeof(B.desk), "MON"); B.mac[5] = 0x42;
+    A.lat_mode = 3; B.lat_mode = 0;
+    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0 };
+    portd_opts_t ob = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0 };
+    CHECK(portd_start(&A, mk(0, 1, 0.0, 1760000000ull * 1000000000ull), &oa) == 0);
+    CHECK(portd_start(&B, mk_jb(1, 2, 0.0, 1760000000ull * 1000000000ull, 96), &ob) == 0);
+    run(2.0);
+
+    TEST("a transmitter latency beyond the buffer: status 0x1A (channel latency), no flow requested, no renegotiation");
+    sub_subscribe(&B, 0, "01", "FOH-1");
+    int seen = 0;
+    for (int i = 0; i < 30; i++) { run(0.5); seen += flows(&B, 0) + flows(&A, 1); }
+    CHECKF(sub_status(&B, 0) == SUB_LATENCY, "status 0x%x", sub_status(&B, 0));
+    CHECKF(seen == 0, "%d flow-half-seconds", seen);
+
+    TEST("the boundary: A at 2 ms = the 96-frame buffer: subscribed with SHIFT 96 - 24 = 72");
+    CHECK(port_set_latency(&A, 2) == 0);
+    run(12.0);
+    int f = B.sub[0].flow;
+    CHECKF(f >= 0 && sub_status(&B, 0) != SUB_LATENCY, "flow %d status 0x%x", f, sub_status(&B, 0));
+    if (f >= 0) CHECKF(B.rx[f].shift == 72 && tbl_read(B.hw, TBL_RX(f, 3)) == 72, "shift %d", B.rx[f].shift);
+
+    TEST("a latency that fits: A at 1 ms: SHIFT 48 - 24 = 24, as before");
+    sub_unsubscribe(&B, 0);
+    run(2.0);
+    CHECK(flows(&B, 0) == 0);
+    CHECK(port_set_latency(&A, 1) == 0);
+    sub_subscribe(&B, 0, "01", "FOH-1");
+    run(4.0);
+    f = B.sub[0].flow;
+    CHECKF(f >= 0 && sub_status(&B, 0) != SUB_LATENCY, "flow %d status 0x%x", f, sub_status(&B, 0));
+    if (f >= 0) CHECKF(B.rx[f].shift == 24 && tbl_read(B.hw, TBL_RX(f, 3)) == 24, "shift %d", B.rx[f].shift);
 }
 
 static int colsrc_ok(port_t *p, int k, int want_id, int want_col)
@@ -192,5 +243,6 @@ int main(void)
     CHECKF(receiving(&B,16,32) == 16, "48 kHz: %d of 16",receiving(&B,16,32));
     CHECKF(receiving(&A,0,8) == 8, "48 kHz reverse: %d of 8",receiving(&A,0,8));
     CHECK(colsrc_ok(&A,0,2,0));
+    latency_beyond_buffer();
     return t_done("test_inproc");
 }

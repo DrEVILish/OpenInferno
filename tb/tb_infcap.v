@@ -4,7 +4,9 @@
 // checked bit-exact at exactly the mode's offset; packet sizes, link load and arrival latency measured; with GOLDEN
 // the first packets compared byte for byte with golden.py's (cross-checked against the upstream-Inferno model,
 // `make xcheck`).
-//   iverilog -DCH=64 -DCPF=16 -DLAT=0 [-DFS96] [-DGOLDEN=\"golden/inferno_64ch.hex\"] tb/tb_infcap.v ...
+// MAXCH sets both ends' MAX_CH (default 64; CH <= MAXCH, <= MAXCH / 2 at 96 kHz); inferno_regs' CAPS, JB_GEOM and
+// CTRL reset columns are checked against it.
+//   iverilog -DCH=64 -DCPF=16 -DLAT=0 [-DFS96] [-DMAXCH=64] [-DGOLDEN=\"golden/inferno_64ch.hex\"] tb/tb_infcap.v ...
 // Provenance: written for OpenProSeries (W16). Licence: GPL-3.0.
 `timescale 1ns/1ps
 `default_nettype none
@@ -17,9 +19,12 @@
 `ifndef LAT
 `define LAT 0
 `endif
+`ifndef MAXCH
+`define MAXCH 64
+`endif
 module tb_infcap;
 `include "inferno_lat.vh"
-    localparam CH = `CH, CPF = `CPF, LAT = `LAT;
+    localparam CH = `CH, CPF = `CPF, LAT = `LAT, MAXCH = `MAXCH;
 `ifdef FS96
     localparam HI = 1, FS = 96000, PERIOD = 521;
 `else
@@ -66,7 +71,7 @@ module tb_infcap;
     wire [7:0] t_data; wire t_valid, t_last, t_ready;
     wire [15:0] tx_pend, tx_run;
     wire [31:0] tx_packets, tx_overruns;
-    inferno_tx #(.MAX_CH(64), .NFLOW(16), .MAXFCH(32), .MAX_FPP(32), .NR(128)) dut_tx (
+    inferno_tx #(.MAX_CH(MAXCH), .NFLOW(16), .MAXFCH(32), .MAX_FPP(32), .NR(128)) dut_tx (
         .clk(clk), .rst(rst), .enable(1'b1), .src_mac(48'h020000000101), .src_ip(32'hC000020A), .fpp_auto(FPP_AUTO),
         .ts_adv(8'd0), .tbl_we(ttbl_we), .tbl_waddr(ttbl_a), .tbl_wdata(ttbl_d), .tbl_raddr(ttbl_a), .tbl_rdata(ttbl_q),
         .in_we(in_we), .in_ch(in_ch), .in_sample(in_sample), .frame_strobe(frame_strobe), .media_ts(media_ts),
@@ -89,13 +94,24 @@ module tb_infcap;
     wire [5:0]  out_ch;
     wire [23:0] out_sample;
     wire [31:0] p_ok, p_bad, late, early, underruns, ts_gaps;
-    inferno_rx #(.MAX_CH(64), .NFLOW(16), .MAXFCH(32), .MAX_SMP(512), .NF(256)) dut_rx (
+    inferno_rx #(.MAX_CH(MAXCH), .NFLOW(16), .MAXFCH(32), .MAX_SMP(512), .NF(256)) dut_rx (
         .clk(clk), .rst(rst), .enable(1'b1), .n_out(CH[6:0]), .media_fs(FS[16:0]), .media_ts(media_ts),
         .tbl_we(rtbl_we), .tbl_waddr(rtbl_a), .tbl_wdata(rtbl_d), .tbl_raddr(rtbl_a), .tbl_rdata(rtbl_q),
         .s_tdata(r_data), .s_tvalid(r_valid), .s_tlast(r_last), .s_tuser(r_user), .claim(claim),
         .frame_strobe(frame_strobe), .play_ts(media_ts - {22'd0, OFFSET}), .out_valid(out_valid), .out_ch(out_ch),
         .out_sample(out_sample), .out_frame_ok(out_frame_ok), .packets_ok(p_ok), .packets_bad(p_bad), .late(late),
         .early(early), .underruns(underruns), .ts_gaps(ts_gaps));
+
+    // ---- the host view of the port (CAPS, JB_GEOM, CTRL) at this MAX_CH
+    reg  [7:0]  reg_a = 8'h38;
+    wire [31:0] reg_q;
+    inferno_regs #(.MAX_CH(MAXCH), .MAXFCH(32), .NF(256)) dut_regs (
+        .clk(clk), .rst(rst), .addr(8'd0), .raddr(reg_a), .we(1'b0), .wdata(32'd0), .re(1'b0), .rdata(reg_q),
+        .tx_en(), .rx_en(), .n_out(), .media_fs(), .set_msec(), .set_msub(), .lat_mode(), .lat_manual(), .ts_adv(),
+        .fs_now(FS[16:0]), .link_offset(32'd0), .play_offset(), .fpp_auto(), .tx_tbl_we(), .rx_tbl_we(), .tbl_addr(),
+        .tbl_wdata(), .tx_tbl_rdata(32'd0), .rx_tbl_rdata(32'd0), .tx_pending(16'd0), .tx_running(16'd0),
+        .media_sec(32'd0), .media_sub(17'd0), .tx_packets(32'd0), .tx_overruns(32'd0), .rx_ok(32'd0), .rx_bad(32'd0),
+        .rx_late(32'd0), .rx_early(32'd0), .rx_underruns(32'd0), .rx_ts_gaps(32'd0));
 
     integer errors = 0;
     // ---- the wire: packet sizes, link load, golden compare
@@ -202,13 +218,16 @@ module tb_infcap;
             errors = errors + 1; $display("bad %0d late %0d early %0d gaps %0d overruns %0d", p_bad, late, early, ts_gaps, tx_overruns);
         end
         if (lat_max >= OFF) begin errors = errors + 1; $display("arrival latency %0d frames, offset %0d", lat_max, OFFSET); end
+        reg_a <= 8'h38; #1 if (reg_q[7:0] != MAXCH) begin errors = errors + 1; $display("CAPS 0x%08x: MAX_CH %0d, want %0d", reg_q, reg_q[7:0], MAXCH); end
+        reg_a <= 8'h34; #1 if (reg_q[23:16] != (HI ? MAXCH / 2 : MAXCH)) begin errors = errors + 1; $display("JB_GEOM 0x%08x: %0d columns", reg_q, reg_q[23:16]); end
+        reg_a <= 8'h04; #1 if (reg_q[14:8] != MAXCH) begin errors = errors + 1; $display("CTRL 0x%08x: %0d columns played", reg_q, reg_q[14:8]); end
         if (checked < NCHECK) begin errors = errors + 1; $display("only %0d frames checked", checked); end
 `ifdef GOLDEN
         if (gpk != 16) begin errors = errors + 1; $display("only %0d golden packets", gpk); end
 `endif
         if (errors == 0)
-            $display("PASS tb_infcap %0dch %0d kHz %0s: %0d flows x %0d ch, fpp %0d, offset %0d frames; %0d frames x %0d columns bit-exact; %0d packets ok; link %0d.%0d Mb/s; arrival latency <= %0d frames%0s",
-                     CH, FS / 1000, lat_s, NFL, CPF, FPP, OFFSET,
+            $display("PASS tb_infcap %0dch MAX_CH %0d %0d kHz %0s: %0d flows x %0d ch, fpp %0d, offset %0d frames; %0d frames x %0d columns bit-exact; %0d packets ok; link %0d.%0d Mb/s; arrival latency <= %0d frames%0s",
+                     CH, MAXCH, FS / 1000, lat_s, NFL, CPF, FPP, OFFSET,
                      checked, CH, p_ok, (100 * busy + 100 * 48 * win_pk) / win, ((1000 * busy + 1000 * 48 * win_pk) / win) % 10, lat_max,
 `ifdef GOLDEN
                      "; 16 golden packets byte-exact");

@@ -5,7 +5,9 @@ PY ?= python3 -I
 TASKSET ?= nice -n 10
 B := build
 RTL := rtl/rmii_tx.v rtl/rmii_rx.v rtl/inferno_tx.v rtl/inferno_rx.v rtl/cpu_pktq.v
-CAP := 48_8_0 48_8_1 48_8_2 48_8_3 64_16_0 64_16_1 64_16_2 64_16_3 64_32_0 32_16_3_96k
+# CH_CPF_LAT[_96k|_48k[_MAXCH]] (MAXCH default 64); MAX_CH 2 has no column bits in its 96 kHz address
+CAP := 48_8_0 48_8_1 48_8_2 48_8_3 64_16_0 64_16_1 64_16_2 64_16_3 64_32_0 32_16_3_96k \
+       2_2_0_48k_2 1_1_0_96k_2 4_4_0_48k_4 2_2_0_96k_4
 .PHONY: check sim xcheck control cli amu clean
 check: xcheck control cli amu sim
 cli:
@@ -20,7 +22,7 @@ $(B)/tb_inferno.vvp: tb/tb_inferno.v $(wildcard rtl/*) | $(B)
 	iverilog -g2005 -Irtl -Itb -s tb_inferno -o $@ $< $(RTL)
 capw = $(word $2,$(subst _, ,$1))
 $(B)/tb_infcap_%.vvp: tb/tb_infcap.v $(wildcard rtl/*) | $(B)
-	iverilog -g2005 -Irtl -Itb -s tb_infcap -DCH=$(call capw,$*,1) -DCPF=$(call capw,$*,2) -DLAT=$(call capw,$*,3) $(if $(call capw,$*,4),-DFS96) $(if $(filter 64_16_0,$*),-DGOLDEN=\"golden/inferno_64ch.hex\") -o $@ $< $(RTL)
+	iverilog -g2005 -Irtl -Itb -s tb_infcap -DCH=$(call capw,$*,1) -DCPF=$(call capw,$*,2) -DLAT=$(call capw,$*,3) $(if $(filter 96k,$(call capw,$*,4)),-DFS96) $(if $(call capw,$*,5),-DMAXCH=$(call capw,$*,5)) $(if $(filter 64_16_0,$*),-DGOLDEN=\"golden/inferno_64ch.hex\") -o $@ $< $(RTL) rtl/inferno_regs.v
 $(B)/%.log: $(B)/%.vvp
 	vvp -n $< > $@
 	@cat $@

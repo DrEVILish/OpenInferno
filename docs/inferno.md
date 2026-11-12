@@ -183,7 +183,10 @@ upstream Inferno, and the control-plane plan (§9) is based on upstream's module
   (§5): the payload limit caps the overhead saving.
 - **Jitter-buffer depth** is fixed by the build (NF = 256 frames × 64 columns at 48 kHz, 512 × 32 at 96 kHz), which
   holds the 5 ms mode plus a packet; a flow may run up to NF − fpp frames ahead (its own latency above ours).
-  `JB_GEOM` (0x34) reports it.
+  `JB_GEOM` (0x34) reports it. A packet that arrives as soon as its last frame exists reaches offset + SHIFT (the
+  larger of the two latencies) past the playout point, so `inferno-portd` subscribes only to transmitters whose
+  advertised latency is at most JB_GEOM frames; above that it requests no flow and reports the channel as Dante RX
+  status 26 (0x1A, channel latency), retrying every 10 s.
 
 ## 5. Channels and capacity
 
@@ -495,7 +498,7 @@ Inferno port. Its pieces and where they come from:
 | `mdns.c` | a per-port responder (`_netaudio-arc/-cmc/-chan/-bund`, the `in-addr` reservations, A records) and the resolver | upstream `mdns_server.rs` / `mdns_client.rs` / searchfire |
 | `arc.c` | ARC 4440 (counts, names, RX / TX channels with pagination, renames, TX / RX flow listings, multicast flow create / delete, subscribe / unsubscribe, 0x1100 / 0x1102 / 0x2320 / 0x3300) and CMC 8800 | upstream `arc_server.rs`, `proto_arc.rs`, `cmc_server.rs` |
 | `flows_tx.c` | flow requests 0x0100 / stop 0x0101 / update 0x0102 → the TX flow table (w1…w12, then w0), keepalive expiry 4 s, admission control (95 Mb/s, §5), multicast bundles 239.255.x.y:4321 after an mDNS address check | `flows_control_server.rs`, `flows_tx.rs`, `tx_multicasts.rs` |
-| `subscriber.c` | our RX channels: mDNS resolution, multicast bundles first, reuse / growth of flows by update, new flows of up to min(nchan, 32) channels, the RX flow table, keepalives 13 37 every 250 ms to the source in the status words, the 2 s / 6 s orphan rule, SHIFT = the transmitter's latency above ours | `channels_subscriber.rs`, `flows_rx.rs`, `flows_control.rs` |
+| `subscriber.c` | our RX channels: mDNS resolution, multicast bundles first, reuse / growth of flows by update, new flows of up to min(nchan, 32) channels, the RX flow table, keepalives 13 37 every 250 ms to the source in the status words, the 2 s / 6 s orphan rule, SHIFT = the transmitter's latency above ours (refused, status 0x1A, beyond `JB_GEOM`) | `channels_subscriber.rs`, `flows_rx.rs`, `flows_control.rs` |
 | `info.c` | board / product / network info, the 1 s heartbeat (frequency offset, RX latency), channel-change notifications | `info_mcast_server.rs`, `mcast.rs` |
 | `ptp.c` | PTPv1: follower, **our own leader** (two-step Sync + Follow_Up, Delay_Resp), the BMCA leader choice (1588 best master clock algorithm) | statime fork `messages_v1`, 1588-2002 octet positions |
 | `clock.c` | the PI servo → PTP_INCR / MEDIA_INC (sigma-delta: the nominal 48 kHz MEDIA_INC is 4 123 168.6), steps, media loads; the audio loop → the CS2000 ratio | our own (§9.3 below) |

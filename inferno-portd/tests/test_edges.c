@@ -291,6 +291,36 @@ static void test_latency_transitions(void)
     CHECK(ctl_exec(&p,"mode junk",out,sizeof(out)) == -1);
     teardown();
 }
+static void test_latency_fit(void)
+{
+    TEST("the full build (256 frames): every latency mode pair fits; the jitter buffer bounds the peer frame-exactly");
+    setup();
+    static const uint32_t L[4] = { 500000, 1000000, 2000000, 5000000 };
+    for (int ours = 0; ours < 4; ours++) {
+        CHECK(port_set_latency(&p, ours) == 0);
+        for (int their = 0; their < 4; their++) CHECK(sub_latency_fits(&p, L[their]));
+    }
+    CHECK(port_set_latency(&p, 1) == 0);
+    CHECK(sub_latency_fits(&p, 5333334));    /* 256 frames at 48 kHz: SHIFT 208 + offset 48 = the buffer */
+    CHECK(!sub_latency_fits(&p, 5354167));   /* 257 frames */
+    CHECK(!sub_latency_fits(&p, 10000000));
+    CHECK(port_set_rate(&p, 96000) == 0);    /* 512 frames: the same time */
+    CHECK(sub_latency_fits(&p, 5333334) && !sub_latency_fits(&p, 5343750));
+    teardown();
+
+    TEST("a 64-frame build (MAXLAT 1): 10 ms does not fit, 1 ms and the 64-frame boundary do");
+    port_defaults(&p); p.cfg_ip = IP4(192, 0, 2, 10);
+    model_cfg_t m = {0}; m.phy_fd = -1; m.maxlat = 1; m.jb_frames = 64;
+    m.port_base = m.clock_base = 0x1000; m.dclk_base = m.cs2k_base = 0xffffffffu;
+    portd_opts_t o = {0}; o.log_sync = -2;
+    CHECK(portd_start(&p, model_open(&m), &o) == 0);
+    CHECK((port_rd(p.hw, INF_JB_GEOM) & 0xFFFF) == 64);
+    CHECK(port_set_latency(&p, 1) == 0);
+    CHECK(sub_latency_fits(&p, 1000000) && sub_latency_fits(&p, 1333334));
+    CHECK(!sub_latency_fits(&p, 1354167) && !sub_latency_fits(&p, 10000000));
+    teardown();
+}
+
 static void test_rate_transitions(void)
 {
     TEST("rate changes stop old unicast flows and restart desired subscriptions"); setup();
@@ -348,6 +378,6 @@ int main(void)
     test_reused_flow_budget(); test_handle_update_budget(); test_save_failure(); test_save_retry();
     test_mac_refresh(); test_control_backpressure();
     test_control_eof(); test_control_errors(); test_capabilities(); test_discovery_flood();
-    test_cancel_pending(); test_latency_transitions(); test_rate_transitions(); test_distinct_discovery_clients();
+    test_cancel_pending(); test_latency_transitions(); test_latency_fit(); test_rate_transitions(); test_distinct_discovery_clients();
     return t_done("test_edges");
 }

@@ -14,8 +14,11 @@ make xcheck                        # independent C encoder/decoder vs Python pac
 make control                       # daemon unit and in-process tests
 make sim                           # media loopback and ten capacity/latency cases
 make -C inferno-portd               # host daemon
-make -C inferno-portd ppc           # MPC8315 build; needs powerpc-linux-gnu-gcc
+make -C inferno-portd ppc           # generic PowerPC/glibc build for modern kernels; not a Pro1 binary
+make -C inferno-portd amu MUSL_CC=/path/to/musl-ppc/bin/musl-gcc  # Pro1 AMU (Linux 2.6.29) build
 ```
+
+The Pro1 AMU runs Linux 2.6.29; Debian's static PowerPC glibc requires Linux 3.2 or newer (its ABI tag says 3.2.0 and it calls newer syscalls such as `rseq`), so `ppc` is not a Pro1 binary. Build the Pro1 daemon with `make amu`, which needs `MUSL_CC`: a PowerPC musl-gcc wrapper (musl 1.2.6, static, over Debian's `gcc-powerpc-linux-gnu`, hard float). `amu` adds `-mlong-double-64 -no-pie` to the existing `-O2 -static -mcpu=e300c3` and builds into `build/amu`. `make check MUSL_CC=...` also runs `check-amu`: the unit tests and a daemon smoke run under `qemu-ppc -r 2.6.29 -cpu e300c3`, plus `AMU_CHECK`, a script that checks the static binary (e.g. its syscalls against 2.6.29), when set. Without `MUSL_CC` it prints `SKIP amu`. QEMU's `-r 2.6.29` only fakes the reported kernel version; it is not a test on a real AMU.
 
 `make xcheck` runs without an upstream checkout. To also verify the upstream source pin, clone https://github.com/teodly/inferno at `9767558e0905c9e9c960f5a60e050fbdc38300b7` and set `INFERNO_UP=/path/to/inferno`.
 

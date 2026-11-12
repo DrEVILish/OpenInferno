@@ -30,6 +30,7 @@ typedef struct {
     int      wire_side;
     uint32_t cs2k_r0;         /* the CS2000 ratio (12.20) at which the desk clock runs at its nominal rate */
     uint64_t tod_start_ns;    /* the time of day at power-up (the RTL starts at 0) */
+    int      jb_frames;       /* NF: jitter-buffer frames at 48 kHz (2 NF at 96 kHz); 0: 256, the full build */
     uint32_t caps;            /* INF_CAPS to report (tests of smaller builds); 0: the full build */
 } model_cfg_t;
 

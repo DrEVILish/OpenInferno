@@ -35,6 +35,7 @@
 /* upstream SubscriptionStatus */
 enum {
     SUB_NONE = 0, SUB_UNRESOLVED = 1, SUB_IN_PROGRESS = 8, SUB_TOO_MANY = 0x14, SUB_TX_FAIL = 0x15,
+    SUB_LATENCY = 0x1A,   /* Dante RX status 26, channel latency: the transmitter needs more than our buffer holds */
     SUB_RX_UNICAST = 0x01010009, SUB_RX_MULTICAST = 0x0101000a,
 };
 
@@ -177,6 +178,7 @@ int  sub_subscribe(port_t *p, int k, const char *txch, const char *txhost);
 void sub_unsubscribe(port_t *p, int k);
 void sub_tick(port_t *p, uint64_t now);
 int  sub_status(const port_t *p, int k);
+int  sub_latency_fits(const port_t *p, uint32_t their_ns);   /* our jitter buffer holds a peer at this latency */
 void sub_retime(port_t *p);
 void sub_reset_rate(port_t *p);
 void sub_shutdown(port_t *p);                  /* stops every RX flow (the daemon exits) */

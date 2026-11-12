@@ -189,6 +189,8 @@ static int lat_offset(const model_t *m)
     return f[m->latency & 3] * (m->media_fs > 50000 ? 2 : 1);
 }
 static int mtu_fpp(int nchb) { return nchb <= 45 ? 32 : nchb <= 91 ? 16 : 8; }
+/* inferno_rx NF: the frames a packet may reach past the playout point (doubled at 96 kHz) */
+static int jb_frames(const model_t *m) { return (m->c.jb_frames ? m->c.jb_frames : 256) * (m->media_fs > 50000 ? 2 : 1); }
 
 static int tx_eff_fpp(const model_t *m, uint32_t w0)
 {
@@ -332,7 +334,7 @@ static int rx_claim(model_t *m, const uint8_t *p, int len)
         uint32_t fs = m->media_fs ? m->media_fs : 48000;
         uint32_t t = get32(mp + 1) * fs + get32(mp + 5) + w[3];
         int frames = pl / (nch * bps);
-        int off = lat_offset(m), nf = m->media_fs > 50000 ? 512 : 256;
+        int off = lat_offset(m), nf = jb_frames(m);
         uint32_t play = m->media_ts - (uint32_t)off;
         if ((int32_t)(play - (t + (uint32_t)frames - 1)) > 0) { m->rx_late++; return 1; }
         if ((int32_t)((t + (uint32_t)frames) - (play + (uint32_t)nf)) > 0) { m->rx_early++; return 1; }
@@ -491,7 +493,7 @@ static uint32_t inf_rd(model_t *m, uint32_t o)
     case INF_MEDIA_SUB: return m->media_sub;
     case INF_LATENCY: return m->latency & 0xFF0103;
     case INF_LAT_STATUS: return ((uint32_t)fpp_auto(m) << 16) | ((uint32_t)lat_offset(m) & 0x7FF);
-    case INF_JB_GEOM: return m->media_fs > 50000 ? ((32u << 16) | 512u) : ((64u << 16) | 256u);
+    case INF_JB_GEOM: return m->media_fs > 50000 ? ((32u << 16) | (uint32_t)jb_frames(m)) : ((64u << 16) | (uint32_t)jb_frames(m));
     case INF_CAPS: return m->c.caps ? m->c.caps : ((uint32_t)NRXF << 24) | ((uint32_t)NTXF << 16) | ((uint32_t)MAXFCH << 8) | MAX_CH;
     case INF_CAPS2: return ((uint32_t)NR_FRAMES << 16) | ((uint32_t)(m->c.maxlat & 3) << 8) | MAX_FPP;
     case INF_TX_PACKETS: return m->tx_packets;

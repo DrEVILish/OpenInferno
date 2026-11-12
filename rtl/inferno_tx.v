@@ -38,6 +38,10 @@
 //               bit 7 = silence
 //   w13..w15 spare (read back)
 // The table is block RAM with registered reads: the host's read data follow the address one clock later.
+//
+// MAC pace (tb_inferno_pace): m_tready may take at most one octet every 2 clocks (the payload sample is read one clock
+// after its pointer moves); at 1 clock an octet each sample's first octet is the previous sample's, silently. rmii_tx
+// takes one every 4.
 `include "clog2.vh"
 `timescale 1ns / 1ps
 `default_nettype none
@@ -307,8 +311,7 @@ module inferno_tx #(
         end
     end
 
-    // the sample under the payload pointer (one clock after the pointer moves; the MAC takes a byte at most
-    // every 4 clocks)
+    // the sample under the payload pointer (one clock after the pointer moves: the MAC pace limit in the header)
     wire [31:0]   mapw = cmapm[rc[4:2]];
     wire [7:0]    mapb = (rc[1:0] == 2'd0) ? mapw[7:0] : (rc[1:0] == 2'd1) ? mapw[15:8] : (rc[1:0] == 2'd2) ? mapw[23:16] : mapw[31:24];
     wire          mute = mapb[7] || mapb[5:0] >= MAX_CH || rc >= MAXFCH;

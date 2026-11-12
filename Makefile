@@ -27,7 +27,7 @@ $(B)/%.log: $(B)/%.vvp
 	vvp -n $< > $@
 	@cat $@
 	@grep -q '^PASS' $@ && ! grep -q '^FAIL' $@
-EXTRA_BENCHES := tb_inferno_staging tb_inferno_short_after_long tb_inferno_lengths tb_rmii tb_ptp tb_ptp_servo tb_fs_phase
+EXTRA_BENCHES := tb_inferno_staging tb_inferno_short_after_long tb_inferno_pace tb_inferno_lengths tb_rmii tb_ptp tb_ptp_servo tb_fs_phase
 $(addprefix $(B)/,$(addsuffix .vvp,$(EXTRA_BENCHES))): $(B)/%.vvp: tb/%.v $(wildcard rtl/*) | $(B)
 	iverilog -g2005 -Irtl -Itb -s $* -o $@ $< $(RTL) rtl/ptp_clock.v rtl/fs_phase.v
 sim: $(addprefix $(B)/,$(addsuffix .log,$(EXTRA_BENCHES))) $(B)/tb_inferno.log $(foreach c,$(CAP),$(B)/tb_infcap_$(c).log)

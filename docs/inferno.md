@@ -136,6 +136,8 @@ upstream Inferno, and the control-plane plan (§9) is based on upstream's module
   straddle a second.
 - **Header vs payload:** 13 table words load in 14 clocks (block RAM, registered reads); the payload reads the ring at
   (T + frame) mod 128 and the column of the flow's channel map, one byte per 4 clocks (the MAC's pace).
+- **MAC pace:** `inferno_tx` and `cpu_pktq` TX give a correct octet at most every 2 clocks; faster corrupts the payload
+  silently (`tb_inferno_pace`).
 
 ### 3.4 Receive (`inferno_rx.v`)
 - **Matching:** Ethernet II, IPv4 IHL 5 not fragmented, UDP; {dst IP, dst port} against the enabled flows' keys, one
@@ -154,6 +156,10 @@ upstream Inferno, and the control-plane plan (§9) is based on upstream's module
 - **96 kHz:** the same 16 K-sample buffer is 512 frames × 32 columns (address {slot[8:0], column[4:0]}), so the buffer
   covers the same 5.3 ms at both rates.
 - **Per-flow status:** source IP and port (keepalive destination), packet count, peak latency.
+- **Octet pace** (clocks, `tb_inferno_pace`; `rmii_rx` meets it): octet 50 ≥ 15 + flow number after octet 37 (else
+  dropped uncounted), last octet ≥ 17 after octet 46 (else bad); evenly spaced 3 an octet (2 only up to flow 11). A
+  good packet that ends during the previous commit (max(samples, 2 × frames) + 3 after that packet's last octet) waits
+  for it, and is counted bad only if the next frame reaches octet 28 first.
 
 ## 4. Port modes and latency modes
 

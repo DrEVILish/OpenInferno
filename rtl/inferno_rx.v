@@ -34,6 +34,13 @@
 //   w3 largest latency seen (media_ts - T at arrival, frames; writing w3 clears it)
 // The status gives the control plane what it needs for keepalives (13 37 to the source address every 250 ms,
 // upstream KEEPALIVE_INTERVAL) and for the flow timeout.
+//
+// Input pace (clocks; tb_inferno_pace). rmii_rx (4 clocks an octet) meets all of it for packets up to 256 frames:
+//   octet 50 >= 15 + f after octet 37 (f = the matched flow's number: key search, then the 13-word loader), else the
+//   packet is dropped uncounted; the last octet >= 17 after octet 46 (the multiply), else bad. Evenly spaced: 3 a
+//   octet for every flow (2 only up to flow 11). A packet's commit ends max(samples, 2 x frames) + 3 after its last
+//   octet (a few more per frame strobe); a good packet that ends sooner waits for it, but is counted bad if the frame
+//   after it reaches octet 28 first.
 `include "clog2.vh"
 `timescale 1ns / 1ps
 `default_nettype none

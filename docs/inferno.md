@@ -4,7 +4,7 @@ Status: 2026-10-14, second revision, simulation and ECP5 synthesis; 2026-10-19: 
 (§9.4) and the desk-clock loops (§9.3, `fs_phase.v`), host-tested. **AES67 is dropped; Inferno is the only AoIP
 format** (user decision 2026-10-14). The port engines are `rtl/inferno_tx.v`, `rtl/inferno_rx.v`, `rtl/inferno_regs.v`,
 `rtl/inferno_lat.vh`, `rtl/cpu_pktq.v` (with `tx_arb`) and `rtl/udp_ipv4.vh`, wired into `rtl/aoip_port.v` as port
-mode 1. Tests: `tb/tb_inferno.v`, `tb/tb_infcap.v` (10 runs), `tb/tb_top_inferno.v` (2 ports, 128 channels),
+mode 1. Tests: `tb/tb_inferno.v`, `tb/tb_infcap.v` (14 runs), `tb/tb_top_inferno.v` (2 ports, 128 channels),
 `tb/tb_top.v`, and `make xcheck`. No hardware has been involved.
 
 Clean room: written from the public standards (IEEE 802.3, IEEE 1588, RFC 768 / 791 / 1071 / 1112), the project
@@ -259,7 +259,7 @@ ACE keep their addresses.
 | **0x2C** | **LATENCY** | RW | bits 1:0 mode (0 = 0.5 ms default, 1 = 1 ms, 2 = 2 ms, 3 = 5 ms; a mode above the build's MAXLAT is refused, the field keeps its value); bit 8 MANUAL (use LINK_OFFSET); bits 23:16 TX_TS_ADVANCE (frames) |
 | 0x30 | LAT_STATUS | RO | bits 10:0 playout offset in use (frames), bits 21:16 automatic fpp |
 | 0x34 | JB_GEOM | RO | bits 15:0 jitter-buffer frames, bits 23:16 columns, at the current rate (256 × 64 / 512 × 32) |
-| 0x38 | CAPS | RO | bits 7:0 MAX_CH (64), 15:8 channels per flow (32), 23:16 TX flows (16), 31:24 RX flows (16) |
+| 0x38 | CAPS | RO | bits 7:0 MAX_CH (64), 15:8 channels per flow (32), 23:16 TX flows (16), 31:24 RX flows (16); `inferno-portd` uses these as its run-time limits |
 | 0x3C | CAPS2 | RO | bits 7:0 MAX_FPP (32), bits 9:8 MAXLAT (the largest latency mode built, 3 = 5 ms), bits 31:16 TX ring frames (128) |
 | 0x40…0x5C | counters | RO | TX_PACKETS, TX_OVERRUNS, RX_OK, RX_BAD, RX_LATE, RX_EARLY, RX_UNDERRUNS, RX_TS_GAPS |
 
@@ -375,7 +375,7 @@ What each latency mode needs if a build were sized for it alone (same 64 columns
 The default build is for the worst case (5 ms). **`top_ecp5` parameter `MAXLAT`** (0…3 = 0.5 / 1 / 2 / 5 ms) sets NF /
 NR / MAX_FPP to the column of this table; `LATENCY` then refuses the modes above it and `CAPS2` bits 9:8 report it.
 On the XC3S5000 (RAMB16, with single-RAMB16 tables and tags) the Inferno engine takes 41 / 29 / 17 / ≤ 11 blocks for
-5 / 2 / 1 / 0.5 ms (docs/xc3s5000.md §2).
+5 / 2 / 1 / 0.5 ms.
 
 ### Synthesis (Yosys 0.52 `synth_ecp5`, nextpnr-ecp5 0.7, speed 6, seed 1)
 
@@ -397,7 +397,7 @@ moving the flow tables into block RAM saved about 1.8 k LUT4 while the buffers f
   52 + 28 + 4 × 3 + 4 ≈ 96).
 - The TX flow pick is registered (the first 6-port run closed at 47.1 MHz on pending → pick → timestamp borrow);
   the 1-port critical path is now the RX judge (packet time → early / late compare → commit start).
-- **Spartan-3 XC3S5000** (104 RAMB16), ISE 14.7 runs in docs/xc3s5000.md: 1 port 53 RAMB16, **two Inferno ports at
+- **Spartan-3 XC3S5000** (104 RAMB16), ISE 14.7 runs (in the parent project; not part of this extraction): 1 port 53 RAMB16, **two Inferno ports at
   5 ms 102**, six ports with Inferno on A / B 114 at 5 ms (does not fit) and **90 at `MAXLAT=2`**; all three
   configurations meet 50 MHz at speed grade -4.
 
@@ -556,7 +556,7 @@ advertised `nchan=16` (option `--nchan`), `fpp=32,2`, `latency_ns` = the port's 
 | I1 | Packet format, golden model, cross-check against upstream Inferno (`make xcheck`: C model of upstream + source pin) | **done** |
 | I2 | `inferno_tx` / `inferno_rx` / `cpu_pktq` / `inferno_regs` in `aoip_port` mode 1; `tb_inferno`, `tb_top` | **done** (simulation) |
 | I2b | AES67 removed; 64 columns, 32 channels per flow, latency modes 0.5 / 1 / 2 / 5 ms, MTU-cut fpp, 96 kHz geometry; `tb_infcap` (48 / 64 ch, every mode), `tb_top_inferno` (2 ports, 128 ch, run-time mode changes) | **done** (simulation, ECP5 synthesis) |
-| I3 | Resource: register the TX pick; the XC3S5000 build; 6-port ECP5 with all ports Inferno is out of reach (316 DP16KD) | **done** (docs/xc3s5000.md: 2 ports at 5 ms, 6 ports at 2 ms, 50 MHz met) |
+| I3 | Resource: register the TX pick; the XC3S5000 build; 6-port ECP5 with all ports Inferno is out of reach (316 DP16KD) | **done** (ISE, parent project: 2 ports at 5 ms, 6 ports at 2 ms, 50 MHz met) |
 | I4 | AMU: `cpu_pktq` netdev driver + PHC | open |
 | I5 | AMU: `inferno-portd` in C from upstream's modules (§9), per-port mDNS, prefs file; `ptpd` follower | **done on the host** (§9.4: the model, two namespaces, PowerPC under qemu); the AMU run is I4 / I6 |
 | I6 | ECP5 board + RMII PHY (W19): Dante Controller sees `<DESK>-1`; RX from / TX to Inferno and a Dante device; PTP lock | open (hardware) |

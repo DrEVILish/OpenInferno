@@ -12,7 +12,7 @@ Install GNU Make, a C compiler, Python 3 and Icarus Verilog (Debian/Ubuntu: `apt
 make check                         # packet cross-check, C tests, RTL simulations
 make xcheck                        # independent C encoder/decoder vs Python packets
 make control                       # daemon unit and in-process tests
-make sim                           # media loopback and ten capacity/latency cases
+make sim                           # media loopback, 14 capacity/latency cases, MAC/PTP/fs_phase/pace benches
 make -C inferno-portd               # host daemon
 make -C inferno-portd ppc           # generic PowerPC/glibc build for modern kernels; not a Pro1 binary
 make -C inferno-portd amu MUSL_CC=/path/to/musl-ppc/bin/musl-gcc  # Pro1 AMU (Linux 2.6.29) build
@@ -25,6 +25,11 @@ The Pro1 AMU runs Linux 2.6.29; Debian's static PowerPC glibc requires Linux 3.2
 ## Integration and status
 
 This is a reusable core extraction, not a board-ready bitstream. Wire the media engines, register blocks, packet queue and clock to your platform; the C daemon's hardware backend expects the OpenProSeries register layout. There are no board pin constraints or synthesis project in this repository.
+
+- **Size:** `inferno_tx` / `inferno_rx` take `MAX_CH` = 2..64 columns (a power of two; half of them at 96 kHz). The daemon reads `INF_CAPS` (columns, channels per flow, TX and RX flows) at start and uses those as its limits, so receive-only (0 TX flows) and small builds run; it refuses caps above its compile-time tables.
+- **Latency:** a subscription whose transmitter latency exceeds the jitter buffer (`JB_GEOM` frames) is refused rather than clamped: one warning, ARC RX status 0x1A, a retry every 10 s.
+- **Clock:** on a follower's first lock the audio loop measures the frequency error and, above 10 ppm, glides there before its phase loop starts. `--audio-acquire-ppm-s R` sets the glide (0 < R ≤ 1000, default 5 ppm/s, the loop's own limit). After a media load (e.g. a 48/96 kHz change) the loop skips the stale `fs_phase` snapshot.
+- **MAC pace:** the engines assume the RMII MACs' 4 clocks an octet. `inferno_rx` needs at least 3 clocks an octet evenly spaced (2 only up to flow 11); `inferno_tx` and `cpu_pktq` TX give a correct octet at most every 2 clocks. A faster MAC needs a pacer. A short packet right after a long one waits for the previous commit instead of being dropped. Exact limits: docs/inferno.md §3.3–3.4, checked by `tb_inferno_pace` and `tb_inferno_short_after_long`.
 
 See [the original architecture and register reference](docs/inferno.md). That document retains historical OpenProSeries paths, board resource measurements and integration references; files outside this extraction remain in the parent project. These measurements are not standalone synthesis results.
 

@@ -122,6 +122,8 @@ struct dclock {
     aloop_t  al;
     int      al_have;
     uint32_t al_last_diff;
+    uint32_t al_fence;         /* FP_DESK_FRAMES just after the last media load: a snapshot still at it may hold a latch
+                                * from before the load (the old count) */
     double   al_unwrap;
     double   audio_phase, audio_ppm;
     uint32_t cs_ratio;         /* the ratio written */
@@ -276,6 +278,12 @@ void dclock_media_load(dclock_t *d)
     d->st.media_loads++;
     d->loaded = 1;
     d->al_have = 0;
+    /* fs_phase latches media_ts at each desk edge: until an edge follows the load its latch is on the old count. Any
+     * snapshot whose edge count has moved past this one's is from an edge after the load (issue 008) */
+    if (d->c.audio_loop && has_dclk(d)) {
+        hw_wr(h, h->dclk_base + FP_SNAP, 1);
+        d->al_fence = hw_rd(h, h->dclk_base + FP_DESK_FRAMES);
+    }
     if (d->onload) d->onload(d->onload_ctx);
 }
 
@@ -320,6 +328,7 @@ static void audio_loop(dclock_t *d, uint64_t now, double *target)
     uint32_t frames = hw_rd(h, h->dclk_base + FP_DESK_FRAMES), ts = hw_rd(h, h->dclk_base + FP_MEDIA_TS);
     uint32_t ticks = hw_rd(h, h->dclk_base + FP_TICKS), period = hw_rd(h, h->dclk_base + FP_PERIOD);
     if (!period || !frames) return;
+    if (!d->al_have && frames == d->al_fence) return;   /* no desk edge since the media load yet: a stale latch */
     uint32_t diff = frames - ts;
     /* a new count (start, media load): a new reference phase, the loop's correction stays (no step) */
     if (!d->al_have) { d->al_unwrap = 0; d->al_last_diff = diff; d->al_have = 1; d->al.have_ref = 0; }

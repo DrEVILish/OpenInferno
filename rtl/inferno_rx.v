@@ -221,6 +221,8 @@ module inferno_rx #(
     wire [31:0] ahead_end  = ahead_r + {22'd0, nfr};               // past the playout point at the packet's end
     wire [31:0] behind_end = 32'd0 - ahead_end;                    // play_r - (w_frame + nfr)
     reg         j_go, j_bad, j_early, j_late;
+    wire        j_new  = fin && matched && !drop;
+    wire        j_wait = j_go && (cbusy || tbusy) && !j_bad && !j_early && !j_late;
     // the flow's channel map (w4..w11, 32 bytes) in a LUT RAM of two banks x 8 words: the loader writes the packet's
     // staging bank (sbank), the commit reads the bank it copies (cbank), so the next header can load while a commit
     // runs (it was a 256-bit register copied at the commit)
@@ -274,7 +276,7 @@ module inferno_rx #(
                 idx <= s_tlast ? 11'd0 : idx + 11'd1;
                 if (idx == 11'd0) begin
                     drop <= !enable; matched <= 1'b0; srch <= 1'b0; ld <= 5'd16;
-                    nsmp <= {(SW+1){1'b0}}; sb <= 2'd0; sc <= 6'd0; nfr <= 10'd0; fin_bad <= 1'b0;
+                    fin_bad <= 1'b0;
                 end
                 case (idx)
                     11'd13: if ({w16[7:0], s_tdata} != 16'h0800) drop <= 1'b1;
@@ -283,6 +285,8 @@ module inferno_rx #(
                     11'd20: if (s_tdata[5:0] != 6'd0) drop <= 1'b1;     // MF or a fragment offset
                     11'd21: if (s_tdata != 8'd0) drop <= 1'b1;
                     11'd23: if (s_tdata != 8'd17) drop <= 1'b1;
+                    // a waiting verdict (j_wait) still needs the counts: cleared here, where it gives up
+                    11'd28: begin nsmp <= {(SW+1){1'b0}}; sb <= 2'd0; sc <= 6'd0; nfr <= 10'd0; end
                     11'd29: p_sip <= {w32[23:0], s_tdata};
                     11'd33: p_dip <= {w32[23:0], s_tdata};
                     11'd35: p_sport <= {w16[7:0], s_tdata};
@@ -338,20 +342,23 @@ module inferno_rx #(
             // a header that ended before the search, the loader or the multiply finished is not a flow packet
             if (s_tvalid && idx == HDR - 1 && (srch || !ld_done)) drop <= 1'b1;
             // ---- judge the frame: the checks (fin), then the verdict (j_go, the clock after)
-            j_go <= fin && matched && !drop;
-            j_bad   <= fin_bad || f_bps < 3'd2 || f_bps > 3'd4 || f_nch == 6'd0 || f_nch > MAXFCH || sb != 2'd0
-                       || sc != 6'd0 || nfr == 10'd0 || nsmp > MAX_SMP || mul_on;
-            j_early <= !ahead_r[31] && ahead_end > {21'd0, nf_eff};
-            j_late  <= !behind_end[31];
-            if (j_go) begin
+            // a good packet judged while the previous commit runs waits for it (a short packet after a long one); its
+            // state lasts until the next frame's byte 28 (p_sip, the counts), so it is dropped as bad only there
+            j_go <= j_new || (j_wait && !(s_tvalid && idx == 11'd28));
+            if (j_wait && s_tvalid && idx == 11'd28) packets_bad <= packets_bad + 32'd1;
+            if (j_new) begin
+                j_bad   <= fin_bad || f_bps < 3'd2 || f_bps > 3'd4 || f_nch == 6'd0 || f_nch > MAXFCH || sb != 2'd0
+                           || sc != 6'd0 || nfr == 10'd0 || nsmp > MAX_SMP || mul_on;
+                j_early <= !ahead_r[31] && ahead_end > {21'd0, nf_eff};
+                j_late  <= !behind_end[31];
+            end
+            if (j_go && !j_wait) begin
                 if (j_bad)
                     packets_bad <= packets_bad + 32'd1;
                 else if (j_early)
                     early <= early + 32'd1;
                 else if (j_late)
                     late <= late + 32'd1;
-                else if (cbusy || tbusy)
-                    packets_bad <= packets_bad + 32'd1;   // the last one still copying (only after a very short packet)
                 else begin
                     packets_ok <= packets_ok + 32'd1;
                     if (have[fidx] && nexp_ts[fidx] != t_frame) ts_gaps <= ts_gaps + 32'd1;

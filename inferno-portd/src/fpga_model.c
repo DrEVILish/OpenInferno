@@ -15,7 +15,7 @@
 #include <math.h>
 #include <net/if.h>
 #include <netinet/in.h>
-#include <linux/if_packet.h>
+#include <netpacket/packet.h>
 #include <net/ethernet.h>
 #include <stdio.h>
 #include <stdlib.h>

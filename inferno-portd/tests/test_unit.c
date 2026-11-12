@@ -265,7 +265,7 @@ static void test_dclock_model(void)
 {
     TEST("desk clock on the model: fs_phase + CS2000 engine, follower, desk +40 ppm: ratio converges, phase bounded");
     g_now_ns = vnow;
-    dclock_cfg_t c = { 1, 48000, 1, 1, 0x00200000u, 0 };
+    dclock_cfg_t c = { 1, 48000, 1, 1, 0x00200000u, 0, 0 };
     model_cfg_t m;
     memset(&m, 0, sizeof(m));
     m.id = 1; m.maxlat = 3; m.port_base = 0x1000; m.clock_base = 0x1000; m.dclk_base = 0x200; m.cs2k_base = 0x300; m.phy_fd = -1;
@@ -381,7 +381,7 @@ int main(void)
     P.n = 1;
     snprintf(P.desk, sizeof(P.desk), "MON");
     P.cfg_ip = IP4(169, 254, 10, 2);
-    portd_opts_t o = { 1, 0, 0, 0, 0, 0, 0, -2, 0 };
+    portd_opts_t o = { 1, 0, 0, 0, 0, 0, 0, -2, 0, 0 };
     CHECK(portd_start(&P, mkmodel(0), &o) == 0);
     CHECK(!strcmp(P.name, "MON-2") && P.devid[3] == 0xFF && P.devid[4] == 0xFE);
     CHECK(P.advertised);

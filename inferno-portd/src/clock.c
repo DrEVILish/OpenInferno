@@ -77,15 +77,43 @@ void aloop_init(aloop_t *a, int fs)
     a->ki = wn * wn / K;           /* 48 kHz: 0.33 ppm per sample-second */
     a->rate_ppm_s = DCLK_SLEW_PPM_S;   /* no audible pitch steps */
     a->range_ppm = 250.0;
+    a->K = K;
+}
+
+void aloop_acquire(aloop_t *a, double ppm_s)
+{
+    a->acq = 1;
+    a->acq_n = 0;
+    a->acq_ppm_s = ppm_s > 0 ? ppm_s : DCLK_SLEW_PPM_S;
 }
 
 double aloop_sample(aloop_t *a, double phase, uint64_t t)
 {
-    if (!a->have_ref) { a->ref = phase; a->have_ref = 1; a->last_t = t; return a->out_ppm; }
+    if (!a->have_ref) { a->ref = phase; a->have_ref = 1; a->last_t = a->t0 = t; return a->out_ppm; }
     double e = phase - a->ref;
     double dt = (double)(t - a->last_t) * 1e-9;
     a->last_t = t;
     if (dt <= 0 || dt > 2.0) dt = 0.125;
+    if (a->acq == 1) {
+        if (t - a->t0 < DCLK_ACQ_NS) return a->out_ppm;
+        /* the phase grows at the frequency error left with the output held: the correction that stops it */
+        double f = e / ((double)(t - a->t0) * 1e-9) / a->K;
+        /* close enough: the phase loop goes on from here, holding the phase where this round started (a small start
+         * error runs as it did without the acquisition) */
+        if (fabs(f) <= (a->acq_n ? DCLK_ACQ_DONE_PPM : DCLK_ACQ_MIN_PPM)) { a->acq = 0; return a->out_ppm; }
+        a->integ = clampd(a->out_ppm + f, a->range_ppm);
+        /* measure again after the glide (the PTP may still be settling its own frequency) */
+        a->acq = ++a->acq_n < DCLK_ACQ_ROUNDS ? 3 : 2;
+    }
+    if (a->acq >= 2) {
+        double lim = a->acq_ppm_s * dt;
+        if (fabs(a->integ - a->out_ppm) > lim) { a->out_ppm += clampd(a->integ - a->out_ppm, lim); return a->out_ppm; }
+        a->out_ppm = a->integ;
+        a->ref = phase;
+        a->t0 = t;
+        a->acq = a->acq == 3;
+        return a->out_ppm;
+    }
     a->integ = clampd(a->integ + a->ki * e * dt, a->range_ppm);
     double u = clampd(a->kp * e + a->integ, a->range_ppm);
     double lim = a->rate_ppm_s * dt;
@@ -131,6 +159,7 @@ struct dclock {
     double   cs_ppm;           /* the commanded ratio (ppm of R0; the dither's average): it moves CS2K_STEP_PPM a write */
     double   cs_track;         /* the commanded ratio while the follower's loop last ran */
     double   cs_base;          /* the commanded ratio when the leader started (the time of day follows its change) */
+    int      acquired;         /* a follower's frequency acquisition has completed once (issue 007) */
     uint64_t next_audio, next_check, last_cs_write;
     int      loaded;
     void   (*onload)(void *);
@@ -204,6 +233,9 @@ static void loop_restart(dclock_t *d)
 {
     aloop_init(&d->al, d->c.fs);
     d->al.integ = d->al.out_ppm = clampd(d->mode == DCLK_LEADER ? d->leader_ppb * 1e-3 : -d->cs_ppm, d->al.range_ppm);
+    /* a follower that has never tracked its source acquires its frequency first; later starts (the source back, a
+     * rate change) start from the ratio it tracked last. A leader's desk is the reference */
+    if (d->mode == DCLK_FOLLOWER && !d->acquired) aloop_acquire(&d->al, d->c.acq_ppm_s);
     d->al_have = 0;
 }
 
@@ -345,9 +377,9 @@ static void audio_loop(dclock_t *d, uint64_t now, double *target)
 
 /* one write at most per period: the commanded ratio moves CS2K_STEP_PPM at most toward the target, dithered (the
  * dither keeps the average exact in holdover too) */
-static void cs2k_steer(dclock_t *d, double target, uint64_t now)
+static void cs2k_steer(dclock_t *d, double target, uint64_t now, double step)
 {
-    d->cs_ppm += clampd(target - d->cs_ppm, CS2K_STEP_PPM);
+    d->cs_ppm += clampd(target - d->cs_ppm, step);
     uint32_t r = cs2k_dither(&d->cs_acc, d->c.cs2k_r0, d->cs_ppm);
     if (r != d->cs_ratio) { cs2k_write_ratio(d, r); d->last_cs_write = now; }
 }
@@ -370,9 +402,13 @@ void dclock_tick(dclock_t *d, uint64_t now)
         int follow = d->mode == DCLK_FOLLOWER && !d->wait_lock;
         double target = d->mode == DCLK_LEADER ? 0.0 : d->mode == DCLK_FOLLOWER && d->wait_lock ? d->cs_track : d->cs_ppm;
         int loop = d->c.audio_loop && has_dclk(d) && (follow || d->mode == DCLK_LEADER);
+        int acq = d->al.acq;
         if (loop) audio_loop(d, now, &target);
-        if (d->c.cs2k) cs2k_steer(d, target, now);
+        /* the acquisition's glide moves the ratio at its own rate; every other move at CS2K_STEP_PPM */
+        double step = loop && follow && (acq || d->al.acq) ? d->al.acq_ppm_s * 0.125 : CS2K_STEP_PPM;
+        if (d->c.cs2k) cs2k_steer(d, target, now, step);
         if (loop && follow) d->cs_track = d->cs_ppm;
+        if (loop && follow && !d->al.acq) d->acquired = 1;
         d->next_audio = now + DCLK_PERIOD_NS;
     }
     if (now >= d->next_check) {

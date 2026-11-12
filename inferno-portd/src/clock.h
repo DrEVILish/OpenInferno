@@ -35,8 +35,19 @@ typedef struct {
     double ref;                    /* the phase at the start (the loop holds it) */
     int    have_ref;
     uint64_t last_t;
+    double K;                      /* samples per second per ppm */
+    /* frequency acquisition (a follower's first start, issue 007): 1 = measuring the phase's slope for DCLK_ACQ_NS
+     * with the output held; 2 = gliding the output to the frequency measured at acq_ppm_s, then the phase found is
+     * the reference and the phase loop runs from there (no phase to pull back, no bump); 3 = gliding, then measuring
+     * again. acq_n: the rounds so far */
+    int    acq, acq_n;
+    double acq_ppm_s;
+    uint64_t t0;                   /* when ref was taken */
 } aloop_t;
 void   aloop_init(aloop_t *a, int fs);
+/* start a frequency acquisition at ppm_s (the CS2000 then moves ppm_s x 0.125 a write while it glides): a follower's
+ * first start (loop_restart) */
+void   aloop_acquire(aloop_t *a, double ppm_s);
 double aloop_sample(aloop_t *a, double phase, uint64_t t_ns);   /* returns the correction (ppm) */
 
 /* The desk clock never steps its rate (user 2026-10-20: lose the source and regain it with a glide): the audio loop's
@@ -48,6 +59,13 @@ double aloop_sample(aloop_t *a, double phase, uint64_t t_ns);   /* returns the c
 #define DCLK_PERIOD_NS  125000000ull
 #define CS2K_STEP_PPM   (DCLK_SLEW_PPM_S * 0.125)
 #define DCLK_SETTLE_NS  2000000000ull   /* a follower's audio loop starts after the PTP has held its lock this long */
+#define DCLK_ACQ_NS     250000000ull    /* the acquisition's measurement: 1 / 1042 sample in 0.25 s = 0.08 ppm at 48 kHz */
+/* a first measurement up to DCLK_ACQ_MIN_PPM is left to the phase loop: 2 s into its lock the PTP may still move the
+ * media clock a few ppm (4 ppm in test_clock), which the acquisition would chase. Above it: a glide, then rounds until
+ * one measures at most DCLK_ACQ_DONE_PPM (the PTP has settled by then), DCLK_ACQ_ROUNDS at most */
+#define DCLK_ACQ_MIN_PPM 10.0
+#define DCLK_ACQ_DONE_PPM 1.0
+#define DCLK_ACQ_ROUNDS 4
 /* the most one write moves the ratio, in LSB: the commanded step plus the dither's carry, ceil(r0 x 0.625e-6) + 1
  * (3 LSB = 1.43 ppm at R0 = 2.0) */
 uint32_t cs2k_max_step(uint32_t r0);
@@ -68,6 +86,7 @@ typedef struct {
     int      cs2k;                 /* steer the CS2000 (PRO1) */
     uint32_t cs2k_r0;
     int      fail_leader;          /* on source loss: 1 = GO LEADER, 0 = HOLDOVER (dclock_set_fail at run time) */
+    double   acq_ppm_s;            /* a follower's acquisition glide (ppm/s); 0 = DCLK_SLEW_PPM_S */
 } dclock_cfg_t;
 
 dclock_t *dclock_new(hw_t *h, const dclock_cfg_t *c);

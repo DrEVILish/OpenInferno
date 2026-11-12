@@ -59,7 +59,7 @@ int portd_start(port_t *p, hw_t *hw, const portd_opts_t *o)
         }
         p->dirty = 0;
     }
-    dclock_cfg_t dc = { o->clock_owner, p->fs, o->audio_loop, o->cs2k, o->cs2k_r0, o->fail_leader };
+    dclock_cfg_t dc = { o->clock_owner, p->fs, o->audio_loop, o->cs2k, o->cs2k_r0, o->fail_leader, o->acq_ppm_s };
     p->clk = dclock_new(hw, &dc);
     dclock_on_load(p->clk, on_load, p);
     if (o->clock_owner) hw_wr(hw, hw->clock_base + INF_MEDIA_FS, (uint32_t)p->fs);   /* port 0's rate drives the desk clock */

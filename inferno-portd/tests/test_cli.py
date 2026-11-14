@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise CLI parsing without opening hardware. Licence: GPL-3.0-or-later."""
+import os
 import socket
 import tempfile
 import subprocess
@@ -13,7 +14,8 @@ class CliEdges(unittest.TestCase):
     def test_reject_invalid_arguments(self):
         for args in (("--ip", "192.0.2.10/-1"), ("--ip", "192.0.2.10/33"),
                      ("--ip", "192.0.2.10/999"), ("--ip", "invalid"),
-                     ("--port", "0"), ("--port", "7")):
+                     ("--port", "0"), ("--port", "7"),
+                     ("--rt", "0"), ("--rt", "100")):
             with self.subTest(args=args):
                 with subprocess.Popen([BIN, "--backend", "model", "-q", *args],
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as proc:
@@ -48,6 +50,32 @@ class CliEdges(unittest.TestCase):
                         self.assertEqual(proc.wait(timeout=2), 0)
                     else:
                         self.fail(f"valid prefix rejected with exit {code}")
+
+    def test_rt_priority_and_loop_gap(self):
+        # LOG M442: a SCHED_OTHER portd on the busy AMU left cpu_pktq undrained long enough to overflow it.
+        # --rt makes the poll loop SCHED_FIFO; status reports the worst gap between two drains.
+        with tempfile.TemporaryDirectory() as directory:
+            path = directory + "/control"
+            with subprocess.Popen([BIN, "--backend", "model", "-q", "--rt", "10", "--ctl", path],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE) as proc:
+                try:
+                    out = b""
+                    for _ in range(50):
+                        if proc.poll() is not None:
+                            self.fail(f"--rt 10 exited {proc.returncode}: {proc.stderr.read()!r}")
+                        out = subprocess.run([BIN, "ctl", path, "status"], capture_output=True, timeout=2).stdout
+                        if out.endswith(b"ok\n"):
+                            break
+                        subprocess.run(["sleep", "0.1"])
+                    gap = [line for line in out.split(b"\n") if line.startswith(b"loop_gap_max_us=")]
+                    self.assertEqual(len(gap), 1, out)
+                    self.assertLess(int(gap[0].split(b"=")[1]), 1000000)
+                    if os.geteuid() == 0:
+                        self.assertEqual(os.sched_getscheduler(proc.pid), os.SCHED_FIFO)
+                        self.assertEqual(os.sched_getparam(proc.pid).sched_priority, 10)
+                finally:
+                    proc.terminate()
+                    proc.wait(timeout=2)
 
     def test_oversized_control_command(self):
         # Rejected before connecting, regardless of the destination socket's availability.

@@ -306,6 +306,8 @@ void port_rename_rx(port_t *p, int k, const char *name)
 
 void port_tick(port_t *p, uint64_t now)
 {
+    if (p->last_tick && now - p->last_tick > p->tick_gap_max) p->tick_gap_max = now - p->last_tick;
+    p->last_tick = now;
     p->hw->ops->service(p->hw);
     int was = net_ready(p->net);
     net_poll(p->net);

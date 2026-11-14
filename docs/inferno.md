@@ -187,6 +187,12 @@ upstream Inferno, and the control-plane plan (§9) is based on upstream's module
 - **Why fpp 32, not 64, at 5 ms:** 64 frames × 8 channels × 3 bytes = 1536 bytes, over the 1463-byte payload limit;
   only flows of ≤ 7 channels could use it. Upstream also advertises fpp ≤ 32. Larger packets would not add channels
   (§5): the payload limit caps the overhead saving.
+- **Columns (MAX_CH):** any even value 2..64 (odd values fail elaboration: 96 kHz pairs the buffer into MAX_CH / 2
+  columns). The OpenProSeries target is 48 per port at 48 kHz, 24 at 96 kHz (`tb_infcap` `_48` runs, `make
+  sim`). Addresses stay {slot, column} with no multiplier, so the ring and the jitter buffer are padded to a 2^CW
+  stride (CW = ⌈log2 MAX_CH⌉): a 48-column build has 64-column RAM, a no-op at powers of two. If a MAXLAT ≥ 2 build
+  runs short of block RAM, slot × MAX_CH addressing would reclaim the padding. A map byte at or past the columns in
+  use (MAX_CH, MAX_CH / 2 at 96 kHz) is sent muted and ignored on receive.
 - **Jitter-buffer depth** is fixed by the build (NF = 256 frames × 64 columns at 48 kHz, 512 × 32 at 96 kHz), which
   holds the 5 ms mode plus a packet; a flow may run up to NF − fpp frames ahead (its own latency above ours).
   `JB_GEOM` (0x34) reports it. A packet that arrives as soon as its last frame exists reaches offset + SHIFT (the
@@ -197,7 +203,8 @@ upstream Inferno, and the control-plane plan (§9) is based on upstream's module
 ## 5. Channels and capacity
 
 **Per port: 64 columns each way at 48 kHz (MAX_CH), 32 at 96 kHz. Two Inferno ports give 128 channels each way**
-(`tb_top_inferno`). The binding limit is the 100 Mb/s link.
+(`tb_top_inferno`). The binding limit is the 100 Mb/s link. That is the largest build: MAX_CH may be any even
+2..64, and the OpenProSeries target is 48 / 24 (see "Columns" in §3; `tools/inferno_capacity.py --ch 48`).
 
 Model (`python3 -I tools/inferno_capacity.py [--fs 96000]` prints it): 24-bit samples, 48 kHz, wire cost per packet = 75 B
 (preamble + SFD 8, Ethernet 14, IPv4 20, UDP 8, Inferno header 9, FCS 4, gap 12) + fpp × nch × 3; N channels in

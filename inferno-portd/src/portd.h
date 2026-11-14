@@ -127,6 +127,7 @@ typedef struct port {
     dclock_t *clk;
     int      changed_rx[MAX_CH];     /* channels for the next change notification */
     int      any_changed;
+    uint64_t last_tick, tick_gap_max;   /* port_tick's worst gap (ns): how long cpu_pktq went undrained */
 } port_t;
 
 /* a build without TX flows (receive-only) has no TX channels */

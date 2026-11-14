@@ -5,7 +5,8 @@
 // the first packets compared byte for byte with golden.py's (cross-checked against the upstream-Inferno model,
 // `make xcheck`).
 // MAXCH sets both ends' MAX_CH (default 64; CH <= MAXCH, <= MAXCH / 2 at 96 kHz); inferno_regs' CAPS, JB_GEOM and
-// CTRL reset columns are checked against it.
+// CTRL reset columns are checked against it. One more 1-channel flow (the probe, flow NFL) maps channel LIM = MAXCH
+// (MAXCH / 2 at 96 kHz), one past the last column: TX must send it muted (zero), RX must ignore it (no column changes).
 //   iverilog -DCH=64 -DCPF=16 -DLAT=0 [-DFS96] [-DMAXCH=64] [-DGOLDEN=\"golden/inferno_64ch.hex\"] tb/tb_infcap.v ...
 // Provenance: written for OpenProSeries (W16). Licence: GPL-3.0.
 `timescale 1ns/1ps
@@ -31,6 +32,7 @@ module tb_infcap;
     localparam HI = 0, FS = 48000, PERIOD = 1042;
 `endif
     localparam NFL = (CH + CPF - 1) / CPF;
+    localparam LIM = HI ? MAXCH / 2 : MAXCH;             // the first map byte past the port's columns
     localparam NCHECK = 48;                              // frames of audio checked after the buffer filled
     localparam [31:0] S0 = 32'd1760000000;
     localparam [16:0] U0 = FS - 10;                      // the second rolls over 10 frames in
@@ -41,7 +43,16 @@ module tb_infcap;
     localparam [5:0]  FPP = (FPP_AUTO < inferno_mtu_fpp(CPF * 3)) ? FPP_AUTO : inferno_mtu_fpp(CPF * 3);
     localparam integer START = FPP - (T064 % FPP);      // the first packet's first frame, relative to T0
     localparam integer OFF = OFFSET;
-    localparam integer FRAMES = OFFSET + START + NCHECK + FPP + 4;
+    // a partial last flow (CH not a multiple of CPF) has fewer channels, so its MTU cut may allow a larger fpp
+    localparam integer NL = CH - (NFL - 1) * CPF;
+    localparam [5:0]  FPPL = (FPP_AUTO < inferno_mtu_fpp(NL * 3)) ? FPP_AUTO : inferno_mtu_fpp(NL * 3);
+    localparam integer STARTL = FPPL - (T064 % FPPL);
+    localparam integer FRAMES = OFFSET + STARTL + NCHECK + FPPL + 4;
+`ifdef GOLDEN
+    localparam PROBE = 0;                                // the golden packets' IPv4 IDs leave no room for the probe
+`else
+    localparam PROBE = 1;
+`endif
 
     reg clk = 0, rst = 1;
     always #10 clk = ~clk;
@@ -116,7 +127,7 @@ module tb_infcap;
     integer errors = 0;
     // ---- the wire: packet sizes, link load, golden compare
     reg [7:0] wbuf [0:2047];
-    integer wlen = 0, gi = 0, gpk = 0, npk = 0, k, busy = 0, win = 0, win_pk = 0;
+    integer wlen = 0, gi = 0, gpk = 0, npk = 0, k, busy = 0, win = 0, win_pk = 0, probe_pk = 0, probe_bad = 0;
     reg [7:0] wb; reg [1:0] wdib = 0; reg prev_en = 0;
     reg measuring = 0;
     always @(posedge clk) begin
@@ -131,11 +142,18 @@ module tb_infcap;
             if (prev_en) begin
                 npk = npk + 1;
                 if (measuring) win_pk = win_pk + 1;
-                if ({wbuf[8 + 38], wbuf[8 + 39]} != 16'd17 + FPP * CPF * 3) begin
+                if (PROBE && {wbuf[8 + 36], wbuf[8 + 37]} == 16'd14336 + NFL) begin      // the probe: every sample muted
+                    probe_pk = probe_pk + 1;
+                    for (k = 8 + 42 + 9; k < wlen - 4; k = k + 1)
+                        if (wbuf[k] !== 8'd0) begin
+                            if (probe_bad < 4) $display("probe packet %0d byte %0d: %02x, want 00 (map byte %0d not muted)", probe_pk, k, wbuf[k], LIM);
+                            probe_bad = probe_bad + 1; errors = errors + 1;
+                        end
+                end else if ({wbuf[8 + 38], wbuf[8 + 39]} != 16'd17 + FPP * CPF * 3 && {wbuf[8 + 38], wbuf[8 + 39]} != 16'd17 + FPPL * NL * 3) begin
                     errors = errors + 1; $display("packet %0d: UDP length %0d, want %0d (fpp %0d)", npk, {wbuf[8 + 38], wbuf[8 + 39]}, 17 + FPP * CPF * 3, FPP);
                 end
 `ifdef GOLDEN
-                if (gpk < 16) begin
+                if (gpk < 16 && {wbuf[8 + 36], wbuf[8 + 37]} != 16'd14336 + NFL) begin
                     for (k = 0; k < wlen; k = k + 1)
                         if (golden[gi + k] !== wbuf[k]) begin
                             if (errors < 10) $display("WIRE packet %0d byte %0d: got %02x want %02x", gpk, k, wbuf[k], golden[gi + k]);
@@ -161,12 +179,12 @@ module tb_infcap;
             end
             cols = cols + 1;
             p_rel = play_n - OFF;                     // the frame's media time - T0
-            want = (p_rel >= START) ? pattern(p_rel, out_ch) : 24'd0;
+            want = (p_rel >= (out_ch >= (NFL - 1) * CPF ? STARTL : START)) ? pattern(p_rel, out_ch) : 24'd0;
             if (out_sample !== want) begin
                 if (errors < 10) $display("PLAY frame %0d col %0d: got %06x want %06x", p_rel, out_ch, out_sample, want);
                 errors = errors + 1;
             end
-            if (p_rel >= START && out_ch == CH - 1) checked = checked + 1;
+            if (p_rel >= STARTL && out_ch == CH - 1) checked = checked + 1;
         end
     end
 
@@ -197,6 +215,16 @@ module tb_infcap;
             rwr(fl * 16 + 1, 32'hC000_0214); rwr(fl * 16 + 2, 14336 + fl); rwr(fl * 16 + 3, 32'd0);
             rwr(fl * 16 + 0, {13'd0, 3'd3, 2'd0, n[5:0], 7'd0, 1'b1});
         end
+        // the probe flow NFL: one channel, map byte LIM, both ends
+        if (PROBE) begin
+            twr(NFL * 16 + 1, 32'h0000_0200); twr(NFL * 16 + 2, 32'h0000_0202); twr(NFL * 16 + 3, 32'hC000_0214);
+            twr(NFL * 16 + 4, {16'd14400 + NFL[15:0], 16'd14336 + NFL[15:0]});
+            twr(NFL * 16 + 5, {24'h808080, LIM[7:0]}); rwr(NFL * 16 + 4, {24'h808080, LIM[7:0]});
+            for (c = 1; c < 8; c = c + 1) begin twr(NFL * 16 + 5 + c, 32'h80808080); rwr(NFL * 16 + 4 + c, 32'h80808080); end
+            twr(NFL * 16 + 0, {8'd64, 8'hB8, 3'd0, 5'd0, 6'd0, 1'b0, 1'b1});
+            rwr(NFL * 16 + 1, 32'hC000_0214); rwr(NFL * 16 + 2, 14336 + NFL); rwr(NFL * 16 + 3, 32'd0);
+            rwr(NFL * 16 + 0, {13'd0, 3'd3, 2'd0, 6'd1, 7'd0, 1'b1});
+        end
         for (f = 0; f < FRAMES; f = f + 1) begin
             for (c = 0; c < CH; c = c + 1) begin
                 @(posedge clk); in_we <= 1; in_ch <= c; in_sample <= pattern(f, c);
@@ -221,6 +249,7 @@ module tb_infcap;
         reg_a <= 8'h38; #1 if (reg_q[7:0] != MAXCH) begin errors = errors + 1; $display("CAPS 0x%08x: MAX_CH %0d, want %0d", reg_q, reg_q[7:0], MAXCH); end
         reg_a <= 8'h34; #1 if (reg_q[23:16] != (HI ? MAXCH / 2 : MAXCH)) begin errors = errors + 1; $display("JB_GEOM 0x%08x: %0d columns", reg_q, reg_q[23:16]); end
         reg_a <= 8'h04; #1 if (reg_q[14:8] != MAXCH) begin errors = errors + 1; $display("CTRL 0x%08x: %0d columns played", reg_q, reg_q[14:8]); end
+        if (PROBE && probe_pk == 0) begin errors = errors + 1; $display("no probe packets"); end
         if (checked < NCHECK) begin errors = errors + 1; $display("only %0d frames checked", checked); end
 `ifdef GOLDEN
         if (gpk != 16) begin errors = errors + 1; $display("only %0d golden packets", gpk); end

@@ -223,7 +223,7 @@ void port_apply_hw(port_t *p)
     port_wr(h, INF_LATENCY, (uint32_t)(p->lat_mode & 3));
     uint32_t got = port_rd(h, INF_LATENCY) & 3;
     if ((int)got != p->lat_mode) { LOGW("latency mode %d refused by the build (MAXLAT %d)", p->lat_mode, p->maxlat); p->lat_mode = (int)got; }
-    int cols = p->fs > 50000 ? MIN(p->channels, MAX_CH / 2) : p->channels;
+    int cols = p->fs > 50000 ? MIN(p->channels, p->caps_ch / 2) : p->channels;
     port_wr(h, INF_CTRL, 3u | ((uint32_t)cols << 8));
 }
 
@@ -306,6 +306,8 @@ void port_rename_rx(port_t *p, int k, const char *name)
 
 void port_tick(port_t *p, uint64_t now)
 {
+    if (p->last_tick && now - p->last_tick > p->tick_gap_max) p->tick_gap_max = now - p->last_tick;
+    p->last_tick = now;
     p->hw->ops->service(p->hw);
     int was = net_ready(p->net);
     net_poll(p->net);

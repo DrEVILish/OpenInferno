@@ -5,11 +5,13 @@ PY ?= python3 -I
 TASKSET ?= nice -n 10
 B := build
 RTL := rtl/rmii_tx.v rtl/rmii_rx.v rtl/inferno_tx.v rtl/inferno_rx.v rtl/cpu_pktq.v
-# CH_CPF_LAT[_96k|_48k[_MAXCH[_NF[_JIT_US]]]] (MAXCH default 64, NF 256; JIT_US: a switch adds 0..JIT_US us per
-# packet); MAX_CH 2 has no column bits in its 96 kHz address. NF 64 is the MAXLAT 1 build (build 28, b32): 96 kHz,
-# 1 ms, fpp 16 (CPF 16) and fpp 32 (CPF 8, a Dante sender's 32-frame packets)
+# CH_CPF_LAT[_96k|_48k[_MAXCH[_NF[_JIT_US]]]] (MAXCH default 64, any even 2..64; NF 256; JIT_US: a switch adds 0..JIT_US
+# us per packet); MAX_CH 2 has no column bits in its 96 kHz address; the _48 runs (the 48 / 24-column port) reach every
+# buffer slot, past the end of an unpadded 2^CW stride. NF 64 is the MAXLAT 1 build (build 28, b32): 96 kHz, 1 ms,
+# fpp 16 (CPF 16) and fpp 32 (CPF 8, a Dante sender's 32-frame packets)
 CAP := 48_8_0 48_8_1 48_8_2 48_8_3 64_16_0 64_16_1 64_16_2 64_16_3 64_32_0 32_16_3_96k \
        2_2_0_48k_2 1_1_0_96k_2 4_4_0_48k_4 2_2_0_96k_4 \
+       48_16_3_48k_48 24_8_3_96k_48 48_8_0_48k_48 48_32_1_48k_48 \
        32_16_1_96k_64_64_400 32_8_1_96k_64_64_250
 # expected to fail (XFAIL; an XPASS fails the check): 32-frame packets at 96 kHz / 1 ms leave about 340 us for
 # transit, so 400 us of jitter loses frames whatever the buffer size (clock design note 2026-11-14 section 8, PR 10)

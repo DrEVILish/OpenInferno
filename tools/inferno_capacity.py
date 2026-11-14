@@ -9,7 +9,7 @@ budget 95 % of 100 Mb/s. "nominal" uses the latency mode's nominal fpp (latency 
 32 / 64), "design" the fpp inferno_tx really sends: at most 32 and cut to the largest power of two whose payload fits
 one 1500-byte IPv4 packet (fpp x nch x 3 <= 1463), as rtl/inferno_lat.vh.
 
-    python3 -I tools/inferno_capacity.py [--fs 48000]
+    python3 -I tools/inferno_capacity.py [--fs 48000] [--ch 64]   (--ch: the port's columns for the load column)
 """
 import argparse
 
@@ -40,9 +40,10 @@ def capacity(fpp, cpf, fs):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fs", type=int, default=48000)
+    ap.add_argument("--ch", type=int, default=64)
     a = ap.parse_args()
     hi = a.fs > 50000
-    print("| latency | nominal fpp | ch / flow | payload | max ch (nominal) | design fpp | max ch (design) | Mb/s at 64 ch |")
+    print("| latency | nominal fpp | ch / flow | payload | max ch (nominal) | design fpp | max ch (design) | Mb/s at %d ch |" % a.ch)
     print("|---|---|---|---|---|---|---|---|")
     for name, nominal, auto in (("0.5 ms", 8, 8), ("1 ms", 16, 16), ("2 ms", 32, 32), ("5 ms", 64, 32)):
         if hi:
@@ -52,7 +53,7 @@ def main():
             fe = min(auto, mtu_fpp(cpf * 3))
             print("| %s | %d | %d | %d B%s | %d | %d | %d | %.1f |" % (
                 name, nominal, cpf, pay, " > MTU" if pay > PAYLOAD_MAX else "", capacity(nominal, cpf, a.fs), fe,
-                capacity(fe, cpf, a.fs), load(64, fe, cpf, a.fs) / 1e6))
+                capacity(fe, cpf, a.fs), load(a.ch, fe, cpf, a.fs) / 1e6))
 
 
 if __name__ == "__main__":

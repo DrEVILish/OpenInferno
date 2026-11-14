@@ -107,6 +107,51 @@ static int colsrc_ok(port_t *p, int k, int want_id, int want_col)
     return model_colsrc(p->hw, k, &id, &col) && id == want_id && col == want_col;
 }
 
+/* fpga/docs/xc3s5000.md 8.11.21 (io build 35, XBAR = 1): RX SFD stamps 40 ns later, TX on the wire 20 ns after its
+ * stamp; io builds 30 / 31 (LOG M423 / M438): RX +20 / +40 ns against build 29. A measure-only follower at 0 ppm,
+ * X ns ahead of the leader, over a 5 us wire: offset X, delay 5000 ns when portd corrects the stamps */
+#define STAMP_X 3123456780ll
+static void stamp_case(const char *what, uint32_t rx_late, uint32_t tx_late, int xbar, int iobuild, double want_off,
+                       double want_delay)
+{
+    if (A.hw) { portd_stop(&A); A.hw->ops->close(A.hw); }
+    if (B.hw) { portd_stop(&B); B.hw->ops->close(B.hw); }
+    W = model_wire_new();
+    port_defaults(&A);
+    port_defaults(&B);
+    A.n = 0; snprintf(A.desk, sizeof(A.desk), "FOH"); A.mac[5] = 0x11;
+    B.n = 1; snprintf(B.desk, sizeof(B.desk), "MON"); B.mac[5] = 0x22;
+    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0 };
+    portd_opts_t ob = { 0, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 0, -2, 0, 0 };
+    CHECK(portd_start(&A, mk(0, 1, 0.0, 1760000000ull * 1000000000ull), &oa) == 0);
+    model_cfg_t m;
+    memset(&m, 0, sizeof(m));
+    m.id = 2; m.maxlat = 3;
+    m.port_base = 0x1000; m.clock_base = 0x1000; m.dclk_base = 0xFFFFFFFFu; m.cs2k_base = 0xFFFFFFFFu;
+    m.phy_fd = -1; m.wire = W; m.wire_side = 1; m.wire_delay_ns = 5000;
+    m.tod_start_ns = (uint64_t)(1760000000ll * 1000000000ll + STAMP_X);
+    m.rx_stamp_late_ns = rx_late; m.tx_wire_late_ns = tx_late; m.xbar = xbar; m.iobuild = iobuild;
+    CHECK(portd_start(&B, model_open(&m), &ob) == 0);
+    TEST(what);
+    run(12.0);
+    ptp_stats_t s;
+    ptp_get_stats(B.ptp, &s);
+    double off = s.offset_ns - (double)STAMP_X;
+    CHECKF(s.state == PTP_SLAVE && fabs(off - want_off) < 1.0 && fabs(s.delay_ns - want_delay) < 1.0,
+           "offset X %+.1f ns (want %+.0f), delay %.1f ns (want %.0f)", off, want_off, s.delay_ns, want_delay);
+}
+
+static void xbar_stamps(void)
+{
+    stamp_case("SFD stamps: no offsets (io build 29): offset and delay exact", 0, 0, 0, 29, 0.0, 5000.0);
+    stamp_case("SFD stamps: XBAR + io build 32 pipeline, its IDs hidden: off by (80 - 20) / 2, delay + (80 + 20) / 2", 80, 20,
+               0, 0, 30.0, 5050.0);
+    stamp_case("SFD stamps: io build 32 + XBAR (OXB1 at C0160, OFCP build 32 at C8900): RX -80, TX +20 ns: exact", 80, 20, 1,
+               32, 0.0, 5000.0);
+    stamp_case("SFD stamps: io build 32, no XBAR: RX -40 ns: exact", 40, 0, 0, 32, 0.0, 5000.0);
+    stamp_case("SFD stamps: io build 30: RX -20 ns: exact", 20, 0, 0, 30, 0.0, 5000.0);
+}
+
 int main(void)
 {
     g_log_level = getenv("V") ? LOG_DEBUG : LOG_WARN;
@@ -244,5 +289,6 @@ int main(void)
     CHECKF(receiving(&A,0,8) == 8, "48 kHz reverse: %d of 8",receiving(&A,0,8));
     CHECK(colsrc_ok(&A,0,2,0));
     latency_beyond_buffer();
+    xbar_stamps();
     return t_done("test_inproc");
 }

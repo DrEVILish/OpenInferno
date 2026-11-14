@@ -6,7 +6,11 @@
 // `make xcheck`).
 // MAXCH sets both ends' MAX_CH (default 64; CH <= MAXCH, <= MAXCH / 2 at 96 kHz); inferno_regs' CAPS, JB_GEOM and
 // CTRL reset columns are checked against it.
-//   iverilog -DCH=64 -DCPF=16 -DLAT=0 [-DFS96] [-DMAXCH=64] [-DGOLDEN=\"golden/inferno_64ch.hex\"] tb/tb_infcap.v ...
+// NF sets the RX jitter buffer (default 256; the MAXLAT 1 builds use 64, so 128 frames at 96 kHz). JIT_US puts a
+// store-and-forward switch on the wire that holds each packet a further 0..JIT_US us (pseudo-random, every 8th packet
+// the full JIT_US; order kept), like a Dante sender's transit. The margins line gives how far the packets stayed from
+// a late and an early drop.
+//   iverilog -DCH=64 -DCPF=16 -DLAT=0 [-DFS96] [-DMAXCH=64] [-DNF=64] [-DJIT_US=400] [-DGOLDEN=\"golden/inferno_64ch.hex\"] tb/tb_infcap.v ...
 // Provenance: written for OpenProSeries (W16). Licence: GPL-3.0.
 `timescale 1ns/1ps
 `default_nettype none
@@ -22,6 +26,9 @@
 `ifndef MAXCH
 `define MAXCH 64
 `endif
+`ifndef NF
+`define NF 256
+`endif
 module tb_infcap;
 `include "inferno_lat.vh"
     localparam CH = `CH, CPF = `CPF, LAT = `LAT, MAXCH = `MAXCH;
@@ -31,7 +38,12 @@ module tb_infcap;
     localparam HI = 0, FS = 48000, PERIOD = 1042;
 `endif
     localparam NFL = (CH + CPF - 1) / CPF;
+    localparam NF_EFF = HI ? 2 * `NF : `NF;              // jitter buffer frames at this rate
+`ifdef JIT_US
+    localparam NCHECK = 960;                             // 10 ms at 96 kHz: enough packets to see the jitter
+`else
     localparam NCHECK = 48;                              // frames of audio checked after the buffer filled
+`endif
     localparam [31:0] S0 = 32'd1760000000;
     localparam [16:0] U0 = FS - 10;                      // the second rolls over 10 frames in
     localparam [63:0] T064 = 64'd1760000000 * FS + FS - 10;
@@ -82,9 +94,46 @@ module tb_infcap;
     rmii_tx dut_mtx (.clk(clk), .rst(rst), .s_tdata(t_data), .s_tvalid(t_valid), .s_tlast(t_last), .s_tready(t_ready),
         .txd(txd), .tx_en(tx_en), .sfd_strobe(sfd_tx), .tx_underrun(und), .tx_done(done));
 
+    // ---- the switch: each packet stored whole, then sent on after a further 0..JIT_US us, in order, 96 bit times apart
+    wire       w_en;
+    wire [1:0] w_d;
+`ifdef JIT_US
+    reg  [1:0] dq [0:65535];
+    reg  [15:0] dq_w = 0, e_ix = 0;
+    reg  [15:0] pq_start [0:255];
+    integer    pq_len [0:255];
+    time       pq_rel [0:255];
+    time       e_free = 0, d_ns;
+    reg  [7:0] pq_w = 0, pq_r = 0;
+    integer    cur_len = 0, seed = 1, e_left = 0, n_sw = 0;
+    reg        s_prev = 0, e_en = 0;
+    reg  [1:0] e_d = 0;
+    always @(posedge clk) begin
+        s_prev <= tx_en;
+        if (tx_en) begin dq[dq_w] = txd; dq_w = dq_w + 16'd1; cur_len = cur_len + 1; end
+        else if (s_prev) begin
+            d_ns = (n_sw % 8 == 7) ? `JIT_US * 1000 : ($unsigned($random(seed)) % (`JIT_US * 1000 + 1));
+            pq_start[pq_w] = dq_w - cur_len[15:0]; pq_len[pq_w] = cur_len; pq_rel[pq_w] = $time + d_ns;
+            pq_w = pq_w + 8'd1; cur_len = 0; n_sw = n_sw + 1;
+        end
+        if (e_left > 0) begin
+            e_en <= 1'b1; e_d <= dq[e_ix]; e_ix = e_ix + 16'd1; e_left = e_left - 1;
+            if (e_left == 0) e_free = $time + 960;
+        end else begin
+            e_en <= 1'b0;
+            if (pq_r != pq_w && $time >= pq_rel[pq_r] && $time >= e_free) begin
+                e_ix = pq_start[pq_r]; e_left = pq_len[pq_r]; pq_r = pq_r + 8'd1;
+            end
+        end
+    end
+    assign w_en = e_en, w_d = e_d;
+`else
+    assign w_en = tx_en, w_d = txd;
+`endif
+
     // ---- RX
     wire [7:0] r_data; wire r_valid, r_last, r_user, sfd_rx, rok, rcrc, rrunt;
-    rmii_rx dut_mrx (.clk(clk), .rst(rst), .crs_dv(tx_en), .rxd(txd), .m_tdata(r_data), .m_tvalid(r_valid), .m_tlast(r_last),
+    rmii_rx dut_mrx (.clk(clk), .rst(rst), .crs_dv(w_en), .rxd(w_d), .m_tdata(r_data), .m_tvalid(r_valid), .m_tlast(r_last),
         .m_tuser(r_user), .sfd_strobe(sfd_rx), .rx_ok(rok), .rx_crc_err(rcrc), .rx_runt(rrunt));
     reg        rtbl_we = 0;
     reg [8:0]  rtbl_a = 0;
@@ -94,7 +143,7 @@ module tb_infcap;
     wire [5:0]  out_ch;
     wire [23:0] out_sample;
     wire [31:0] p_ok, p_bad, late, early, underruns, ts_gaps;
-    inferno_rx #(.MAX_CH(MAXCH), .NFLOW(16), .MAXFCH(32), .MAX_SMP(512), .NF(256)) dut_rx (
+    inferno_rx #(.MAX_CH(MAXCH), .NFLOW(16), .MAXFCH(32), .MAX_SMP(512), .NF(`NF)) dut_rx (
         .clk(clk), .rst(rst), .enable(1'b1), .n_out(CH[6:0]), .media_fs(FS[16:0]), .media_ts(media_ts),
         .tbl_we(rtbl_we), .tbl_waddr(rtbl_a), .tbl_wdata(rtbl_d), .tbl_raddr(rtbl_a), .tbl_rdata(rtbl_q),
         .s_tdata(r_data), .s_tvalid(r_valid), .s_tlast(r_last), .s_tuser(r_user), .claim(claim),
@@ -105,7 +154,7 @@ module tb_infcap;
     // ---- the host view of the port (CAPS, JB_GEOM, CTRL) at this MAX_CH
     reg  [7:0]  reg_a = 8'h38;
     wire [31:0] reg_q;
-    inferno_regs #(.MAX_CH(MAXCH), .MAXFCH(32), .NF(256)) dut_regs (
+    inferno_regs #(.MAX_CH(MAXCH), .MAXFCH(32), .NF(`NF)) dut_regs (
         .clk(clk), .rst(rst), .addr(8'd0), .raddr(reg_a), .we(1'b0), .wdata(32'd0), .re(1'b0), .rdata(reg_q),
         .tx_en(), .rx_en(), .n_out(), .media_fs(), .set_msec(), .set_msub(), .lat_mode(), .lat_manual(), .ts_adv(),
         .fs_now(FS[16:0]), .link_offset(32'd0), .play_offset(), .fpp_auto(), .tx_tbl_we(), .rx_tbl_we(), .tbl_addr(),
@@ -114,6 +163,14 @@ module tb_infcap;
         .rx_late(32'd0), .rx_early(32'd0), .rx_underruns(32'd0), .rx_ts_gaps(32'd0));
 
     integer errors = 0;
+    // ---- what the judge saw of each packet: frames from the playout point to its first frame (below 0: late) and to
+    // past its last (above NF_EFF: early)
+    integer a_end, a_start_min = 1 << 30, a_end_max = -(1 << 30), judged = 0;
+    always @(posedge clk) if (dut_rx.j_new) begin
+        a_end = $signed(dut_rx.ahead_end); judged = judged + 1;
+        if (a_end - dut_rx.nfr < a_start_min) a_start_min = a_end - dut_rx.nfr;
+        if (a_end > a_end_max) a_end_max = a_end;
+    end
     // ---- the wire: packet sizes, link load, golden compare
     reg [7:0] wbuf [0:2047];
     integer wlen = 0, gi = 0, gpk = 0, npk = 0, k, busy = 0, win = 0, win_pk = 0;
@@ -150,7 +207,7 @@ module tb_infcap;
     end
 
     // ---- playout check: every column of every played frame
-    integer play_n = -1, p_rel, checked = 0, cols = 0;
+    integer play_n = -1, p_rel, checked = 0, cols = 0, lost = 0, lost_frm = 0, last_bad = -1;  // lost: samples played as silence
     reg [23:0] want;
     always @(posedge clk) begin
         if (out_valid) begin
@@ -163,6 +220,10 @@ module tb_infcap;
             p_rel = play_n - OFF;                     // the frame's media time - T0
             want = (p_rel >= START) ? pattern(p_rel, out_ch) : 24'd0;
             if (out_sample !== want) begin
+                if (out_sample === 24'd0) begin
+                    lost = lost + 1;
+                    if (p_rel != last_bad) begin lost_frm = lost_frm + 1; last_bad = p_rel; end
+                end
                 if (errors < 10) $display("PLAY frame %0d col %0d: got %06x want %06x", p_rel, out_ch, out_sample, want);
                 errors = errors + 1;
             end
@@ -224,6 +285,11 @@ module tb_infcap;
         if (checked < NCHECK) begin errors = errors + 1; $display("only %0d frames checked", checked); end
 `ifdef GOLDEN
         if (gpk != 16) begin errors = errors + 1; $display("only %0d golden packets", gpk); end
+`endif
+        $display("tb_infcap margins: %0d packets; first frame >= %0d frames past the playout point (%0d us), last frame <= %0d of %0d buffer frames (early margin %0d frames, %0d us); dropped late %0d early %0d; samples lost %0d in %0d frames",
+                 judged, a_start_min, a_start_min * 1000000 / FS, a_end_max, NF_EFF, NF_EFF - a_end_max, (NF_EFF - a_end_max) * 1000000 / FS, late, early, lost, lost_frm);
+`ifdef JIT_US
+        $display("tb_infcap switch: %0d packets, each held a further 0..%0d us", n_sw, `JIT_US);
 `endif
         if (errors == 0)
             $display("PASS tb_infcap %0dch MAX_CH %0d %0d kHz %0s: %0d flows x %0d ch, fpp %0d, offset %0d frames; %0d frames x %0d columns bit-exact; %0d packets ok; link %0d.%0d Mb/s; arrival latency <= %0d frames%0s",

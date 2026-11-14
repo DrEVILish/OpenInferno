@@ -426,6 +426,18 @@ static void test_small_builds(void)
     CHECK(setup_caps(0x02010802u, 48000) == 0);
     CHECK(port_set_rate(&p, 96000) == 0); CHECK(p.channels == 1);
     teardown();
+
+    TEST("ARC 0x1000 offsets 2/4/16 (TX / RX / total channels) follow the build: full, TX-only, RX-only, small");
+    static const struct { uint32_t caps; int tx, rx; } bc[] = {
+        { 0, 64, 64 }, { 0x00020804u, 4, 0 }, { 0x02000802u, 0, 2 }, { 0x02010802u, 2, 2 } };
+    for (size_t i = 0; i < sizeof(bc) / sizeof(bc[0]); i++) {
+        CHECK(setup_caps(bc[i].caps, 48000) == 0);
+        CHECK(arc(0x1000, NULL, 0, r, sizeof(r)) == 44);
+        CHECKF(get16(r + 12) == bc[i].tx && get16(r + 14) == bc[i].rx && get16(r + 26) == bc[i].tx + bc[i].rx,
+               "caps %08x: TX %d RX %d total %d, want %d/%d", bc[i].caps, get16(r + 12), get16(r + 14), get16(r + 26),
+               bc[i].tx, bc[i].rx);
+        teardown();
+    }
 }
 static void test_distinct_discovery_clients(void)
 {

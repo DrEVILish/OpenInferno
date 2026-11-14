@@ -193,12 +193,12 @@ int arc_handle(port_t *p, const uint8_t *req, int len, uint8_t *out, int max)
         memset(x, 0, sizeof(x));
         x[0] = 0;
         x[1] = 0x30;   /* Flags2: supports_tx_channel_rename (bit 4), supports_tx_multicast (bit 5) */
-        put16(x + 2, (uint16_t)port_tx_channels(p)); put16(x + 4, (uint16_t)p->channels);
+        put16(x + 2, (uint16_t)port_tx_channels(p)); put16(x + 4, (uint16_t)port_rx_channels(p));
         put16(x + 6, 4);
         put16(x + 8, (uint16_t)MIN(p->caps_fch, p->channels));
         put16(x + 10, 8);
         put16(x + 12, (uint16_t)p->caps_txf); put16(x + 14, (uint16_t)p->caps_rxf);
-        put16(x + 16, (uint16_t)(port_tx_channels(p) + p->channels));
+        put16(x + 16, (uint16_t)(port_tx_channels(p) + port_rx_channels(p)));
         put16(x + 18, 1); put16(x + 20, 1);
         r = respond(req, 1, x, 34, out, max);
         break;

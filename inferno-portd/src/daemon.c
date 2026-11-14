@@ -70,7 +70,7 @@ int portd_start(port_t *p, hw_t *hw, const portd_opts_t *o)
         info_init(p);
         port_advertise(p);
     }
-    LOGI("port %d up: %d TX / %d RX channels at %d Hz, latency %u ns, PTP role %d%s", p->n + 1, port_tx_channels(p), p->channels, p->fs,
+    LOGI("port %d up: %d TX / %d RX channels at %d Hz, latency %u ns, PTP role %d%s", p->n + 1, port_tx_channels(p), port_rx_channels(p), p->fs,
          port_latency_ns(p), o->ptp_role, o->clock_owner ? ", desk clock owner" : "");
     return 0;
 }

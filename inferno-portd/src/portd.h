@@ -131,6 +131,8 @@ typedef struct port {
 
 /* a build without TX flows (receive-only) has no TX channels */
 static inline int port_tx_channels(const port_t *p) { return p->caps_txf ? p->channels : 0; }
+/* a build without RX flows (transmit-only) has no RX channels */
+static inline int port_rx_channels(const port_t *p) { return p->caps_rxf ? p->channels : 0; }
 
 /* identity and adverts (port.c) */
 void port_defaults(port_t *p);

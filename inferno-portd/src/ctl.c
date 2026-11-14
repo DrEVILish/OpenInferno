@@ -158,7 +158,9 @@ int ctl_exec(port_t *p, const char *line, char *out, size_t sz)
     }
     if (!strcmp(cmd, "ptp") && n >= 2 && p->ptp) {
         int role = !strcmp(a, "off") ? PTP_ROLE_OFF : !strcmp(a, "leader") ? PTP_ROLE_LEADER : !strcmp(a, "follower") ? PTP_ROLE_FOLLOWER : PTP_ROLE_AUTO;
-        ptp_set_role(p->ptp, role, n >= 3 && !strcmp(b, "steer"));
+        int steer = n >= 3 && !strcmp(b, "steer");
+        if (steer && !(p->clk && dclock_owner(p->clk))) { outf(out, sz, "err steer needs the desk clock owner (--owner)\n"); return -1; }
+        ptp_set_role(p->ptp, role, steer);
         outf(out, sz, "ok\n");
         return 0;
     }

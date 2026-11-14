@@ -95,6 +95,7 @@ void   dclock_free(dclock_t *d);
  * the time of day's rate glide across every change, never step */
 void   dclock_set_mode(dclock_t *d, int mode);
 int    dclock_mode(const dclock_t *d);
+int    dclock_owner(const dclock_t *d);           /* only the owner steps and steers the desk clock */
 /* clockfail at run time: what the next source loss does, and at once when the source is lost now */
 void   dclock_set_fail(dclock_t *d, int fail_leader);
 void   dclock_set_rate(dclock_t *d, int fs);

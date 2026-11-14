@@ -152,6 +152,19 @@ static void follower_days_off(void)
     dclock_get_stats(B.clk, &cb);
     CHECKF(sb.state == PTP_SLAVE && fabs(sb.offset_ns) < 1000.0 && cb.steps >= 1 && cb.locked,
            "offset %.0f ns steps %llu locked %d", sb.offset_ns, (unsigned long long)cb.steps, cb.locked);
+    char out[256] = "";
+    ctl_exec(&B, "ptp follower steer", out, sizeof(out));
+    CHECKF(!strcmp(out, "ok\n"), "owner: ctl \"ptp follower steer\" answered \"%s\"", out);
+
+    TEST("ctl \"ptp follower steer\" on a non-owner is refused, never a silent no-op");
+    CHECK(pair(&desk) == 0);
+    out[0] = 0;
+    ctl_exec(&B, "ptp follower steer", out, sizeof(out));
+    run(10.0);
+    ptp_get_stats(B.ptp, &sb);
+    dclock_get_stats(B.clk, &cb);
+    CHECKF(!strncmp(out, "err", 3) && sb.servo_state == 0 && cb.steps == 0, "reply \"%s\" servo %d steps %llu", out,
+           sb.servo_state, (unsigned long long)cb.steps);
 }
 
 int main(void)

@@ -426,6 +426,18 @@ static void test_small_builds(void)
     CHECK(setup_caps(0x02010802u, 48000) == 0);
     CHECK(port_set_rate(&p, 96000) == 0); CHECK(p.channels == 1);
     teardown();
+
+    TEST("the OpenProSeries 48-column port (16 / 16 flows, 32 ch per flow): 48 at 48 kHz, 24 at 96 kHz");
+    char o3[64];
+    CHECK(setup_caps(0x10102030u, 48000) == 0); CHECK(p.channels == 48 && chan_answers() == 48);
+    CHECK(((port_rd(p.hw, INF_JB_GEOM) >> 16) & 0xFF) == 48);
+    CHECK(ctl_exec(&p, "channels 49", o3, sizeof(o3)) == -1 && ctl_exec(&p, "channels 48", o3, sizeof(o3)) == 0);
+    CHECK(port_set_rate(&p, 96000) == 0); CHECK(p.channels == 24);   /* the rate change clamps 48 to 24 */
+    CHECK(((port_rd(p.hw, INF_CTRL) >> 8) & 0x7F) == 24 && ((port_rd(p.hw, INF_JB_GEOM) >> 16) & 0xFF) == 24);
+    teardown();
+    CHECK(setup_caps(0x10102030u, 96000) == 0); CHECK(p.channels == 24 && chan_answers() == 24);
+    CHECK(ctl_exec(&p, "channels 25", o3, sizeof(o3)) == -1 && ctl_exec(&p, "channels 24", o3, sizeof(o3)) == 0);
+    teardown();
 }
 static void test_distinct_discovery_clients(void)
 {

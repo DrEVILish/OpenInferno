@@ -189,6 +189,8 @@ static int lat_offset(const model_t *m)
     return f[m->latency & 3] * (m->media_fs > 50000 ? 2 : 1);
 }
 static int mtu_fpp(int nchb) { return nchb <= 45 ? 32 : nchb <= 91 ? 16 : 8; }
+/* the build's columns at the current rate (CAPS bits 7:0, half at 96 kHz): map bytes at or past it are muted / ignored */
+static int cols_now(const model_t *m) { int c = m->c.caps ? (int)(m->c.caps & 0xFF) : MAX_CH; return m->media_fs > 50000 ? c / 2 : c; }
 /* inferno_rx NF: the frames a packet may reach past the playout point (doubled at 96 kHz) */
 static int jb_frames(const model_t *m) { return (m->c.jb_frames ? m->c.jb_frames : 256) * (m->media_fs > 50000 ? 2 : 1); }
 
@@ -287,7 +289,7 @@ static void tx_packet(model_t *m, int f, uint32_t t)
     for (int j = 0; j < fpp; j++)
         for (int c = 0; c < nch; c++) {
             uint8_t mb = (uint8_t)(w[5 + c / 4] >> (8 * (c % 4)));
-            uint32_t v = (mb & 0x80) || (mb & 0x3F) >= MAX_CH ? 0 : pattern(m->c.id, mb & 0x3F, t + (uint32_t)j);
+            uint32_t v = (mb & 0x80) || mb >= cols_now(m) ? 0 : pattern(m->c.id, mb, t + (uint32_t)j);
             if (bps == 4) { put32(s, v << 8); s += 4; }
             else { s[0] = (uint8_t)(v >> 16); s[1] = (uint8_t)(v >> 8); s[2] = (uint8_t)v; s += 3; }
         }
@@ -350,11 +352,11 @@ static int rx_claim(model_t *m, const uint8_t *p, int len)
         for (int j = 0; j < frames; j++)
             for (int c = 0; c < nch; c++, s += bps) {
                 uint8_t mb = c < MAXFCH ? (uint8_t)(w[4 + c / 4] >> (8 * (c % 4))) : 0x80;
-                if ((mb & 0x80) || (mb & 0x3F) >= MAX_CH || bps == 2) continue;
+                if ((mb & 0x80) || mb >= cols_now(m) || bps == 2) continue;
                 uint32_t v = bps == 4 ? get32(s) >> 8 : ((uint32_t)s[0] << 16) | ((uint32_t)s[1] << 8) | s[2];
                 if ((v & 0x3FFF) == ((t + (uint32_t)j - w[3]) & 0x3FFF)) m->pat_ok++;
                 else m->pat_bad++;
-                m->colsrc[mb & 0x3F] = 0x80000000u | (((v >> 20) & 0xF) << 16) | ((v >> 14) & 0x3F);
+                m->colsrc[mb] = 0x80000000u | (((v >> 20) & 0xF) << 16) | ((v >> 14) & 0x3F);
             }
         return 1;
     }
@@ -493,7 +495,7 @@ static uint32_t inf_rd(model_t *m, uint32_t o)
     case INF_MEDIA_SUB: return m->media_sub;
     case INF_LATENCY: return m->latency & 0xFF0103;
     case INF_LAT_STATUS: return ((uint32_t)fpp_auto(m) << 16) | ((uint32_t)lat_offset(m) & 0x7FF);
-    case INF_JB_GEOM: return m->media_fs > 50000 ? ((32u << 16) | (uint32_t)jb_frames(m)) : ((64u << 16) | (uint32_t)jb_frames(m));
+    case INF_JB_GEOM: return ((uint32_t)cols_now(m) << 16) | (uint32_t)jb_frames(m);
     case INF_CAPS: return m->c.caps ? m->c.caps : ((uint32_t)NRXF << 24) | ((uint32_t)NTXF << 16) | ((uint32_t)MAXFCH << 8) | MAX_CH;
     case INF_CAPS2: return ((uint32_t)NR_FRAMES << 16) | ((uint32_t)(m->c.maxlat & 3) << 8) | MAX_FPP;
     case INF_TX_PACKETS: return m->tx_packets;

@@ -216,6 +216,7 @@ dclock_t *dclock_new(hw_t *h, const dclock_cfg_t *c)
 
 void dclock_free(dclock_t *d) { free(d); }
 int  dclock_mode(const dclock_t *d) { return d->mode; }
+int  dclock_owner(const dclock_t *d) { return d->c.owner; }
 void dclock_on_load(dclock_t *d, void (*fn)(void *), void *ctx) { d->onload = fn; d->onload_ctx = ctx; }
 
 /* a leader: the audio loop's rate times the CS2000's change since the leader started, so the time of day follows a

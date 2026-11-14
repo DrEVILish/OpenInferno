@@ -92,6 +92,7 @@ static void status(port_t *p, char *o, size_t sz)
     net_get_stats(p->net, &ns);
     outf(o, sz, "net_rx=%llu\nnet_tx=%llu\nnet_drops=%llu\n", (unsigned long long)ns.rx, (unsigned long long)ns.tx,
          (unsigned long long)ns.drops);
+    outf(o, sz, "loop_gap_max_us=%llu\n", (unsigned long long)(p->tick_gap_max / 1000));
 }
 
 int ctl_exec(port_t *p, const char *line, char *out, size_t sz)

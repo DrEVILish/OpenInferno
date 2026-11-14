@@ -509,6 +509,13 @@ static void test_small_builds(void)
                bc[i].tx, bc[i].rx);
         teardown();
     }
+    TEST("ARC 0x3000 RX channel list follows the build: full 64, TX-only 0, RX-only 2, small 2 entries");
+    for (size_t i = 0; i < sizeof(bc) / sizeof(bc[0]); i++) {
+        CHECK(setup_caps(bc[i].caps, 48000) == 0);
+        if (bc[i].rx) check_channel_pages(0x3000, bc[i].rx, 16, 20);
+        else { arc(0x3000, pg1, 4, r, sizeof(r)); CHECKF(r[11] == 0, "caps %08x: %d RX entries, want 0", bc[i].caps, r[11]); }
+        teardown();
+    }
 }
 static void test_distinct_discovery_clients(void)
 {

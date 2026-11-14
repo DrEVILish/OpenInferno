@@ -265,7 +265,7 @@ int arc_handle(port_t *p, const uint8_t *req, int len, uint8_t *out, int max)
         /* netaudio takes at most 16 entries per RX page, and rejects a cut one (fewer than 16 and "more"): 16 entries
          * with 31-character names already pass 800 bytes, so RX pages may grow to the MTU.
          * shortcut: 16 entries with long names and many long subscriptions still cut; dedupe strings if that bites */
-        int more = serialize_page(p, 16, st, p->channels, 20, 0x3C, RX_PAGE_LIMIT, rx_item, &cx, b);
+        int more = serialize_page(p, 16, st, port_rx_channels(p), 20, 0x3C, RX_PAGE_LIMIT, rx_item, &cx, b);
         r = respond_page(req, more, b, out, max);
         break;
     }

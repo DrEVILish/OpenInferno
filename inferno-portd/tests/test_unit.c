@@ -365,10 +365,31 @@ static void test_restored_channels(void)
     portd_stop(&p); h->ops->close(h); unlink(path);
 }
 
+/* the mute gate's ready threshold follows the SFD stamps: 5 us for hardware stamps, 50 us for software ones (a model
+ * on a real-time PHY: kernel receive times), --ready-us overrides either */
+static void test_ready_threshold(void)
+{
+    TEST("ready threshold: hardware stamps 5 us, software stamps 50 us, --ready-us overrides");
+    CHECK(ptp_ready_ns(0, 0) == 5000.0 && ptp_ready_ns(1, 0) == 50000.0);
+    CHECK(ptp_ready_ns(0, 20) == 20000.0 && ptp_ready_ns(1, 7) == 7000.0);
+    model_cfg_t m;
+    memset(&m, 0, sizeof(m));
+    m.port_base = 0x1000; m.clock_base = 0x1000; m.dclk_base = m.cs2k_base = 0xFFFFFFFFu;
+    m.phy_fd = -1;
+    hw_t *h = model_open(&m);
+    CHECKF(!h->sw_stamps, "in-memory wire: exact stamps, sw_stamps %d", h->sw_stamps);
+    h->ops->close(h);
+    m.phy_fd = dup(0);
+    h = model_open(&m);
+    CHECKF(h->sw_stamps, "model on a PHY socket: software stamps, sw_stamps %d", h->sw_stamps);
+    h->ops->close(h);
+}
+
 int main(void)
 {
     g_log_level = LOG_WARN;
     test_ptp_msgs();
+    test_ready_threshold();
     test_servo();
     test_aloop();
     test_dns();

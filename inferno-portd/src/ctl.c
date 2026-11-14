@@ -55,6 +55,7 @@ static void status(port_t *p, char *o, size_t sz)
         outf(o, sz, "ptp_leader=%02x%02x%02x%02x%02x%02x\n", s.leader_uuid[0], s.leader_uuid[1], s.leader_uuid[2], s.leader_uuid[3],
              s.leader_uuid[4], s.leader_uuid[5]);
     }
+    outf(o, sz, "clock_ready=%d\n", !p->ptp || p->clock_ready);
     if (p->clk) {
         dclock_stats_t c;
         dclock_get_stats(p->clk, &c);

@@ -214,6 +214,7 @@ struct ptp {
     double   delay_ns;
     int      have_delay;
     servo_t  servo;
+    uint64_t good_since;        /* the run of good samples (locked, |offset| < PTP_READY_NS) began; 0: none */
     /* leader */
     uint16_t sync_pending_seq;
     int      sync_pending;
@@ -276,6 +277,7 @@ static void set_state(ptp_t *p, int s)
     p->t1_ok = p->t2_ok = p->t3_ok = 0;
     p->have_delay = 0;
     servo_init(&p->servo);
+    p->good_since = 0;
     p->last_leader_rx = g_now();   /* the 4 s source-loss timer runs from here, never from a Sync before a gap */
     p->lost = 0;
     if (p->clk && p->c.steer) {
@@ -407,6 +409,9 @@ static void sample(ptp_t *p)
             } else if (r != SERVO_UNLOCKED || ppb != 0.0) dclock_set_freq(p->clk, ppb);
             dclock_set_locked(p->clk, r == SERVO_LOCKED && fabs(off) < 20000.0);
         }
+        if (fabs(off) < PTP_READY_NS && (!p->c.steer || p->st.servo_state == SERVO_LOCKED)) {
+            if (!p->good_since) p->good_since = g_now();
+        } else p->good_since = 0;
     }
     p->t1_ok = p->t2_ok = 0;
 }
@@ -578,6 +583,7 @@ void ptp_tick(ptp_t *p, uint64_t now)
             p->t1_ok = p->t2_ok = p->t3_ok = 0;
             p->have_delay = 0;
             servo_init(&p->servo);
+            p->good_since = 0;
             dclock_set_locked(p->clk, 0);
             dclock_set_mode(p->clk, lost ? DCLK_HOLDOVER : DCLK_FOLLOWER);
         }
@@ -585,6 +591,12 @@ void ptp_tick(ptp_t *p, uint64_t now)
 }
 
 int ptp_state(const ptp_t *p) { return p->state; }
+
+int ptp_clock_ready(const ptp_t *p)
+{
+    if (p->c.role == PTP_ROLE_LEADER || p->c.role == PTP_ROLE_OFF || p->state == PTP_MASTER) return 1;
+    return p->state == PTP_SLAVE && !p->lost && p->good_since && g_now() - p->good_since >= PTP_READY_HOLD_NS;
+}
 
 const char *ptp_state_name(int s)
 {

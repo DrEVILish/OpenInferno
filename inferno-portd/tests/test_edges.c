@@ -381,19 +381,89 @@ static uint64_t chan_answers(void)
     mdns_get_stats(p.mdns, &b);
     return b.tx_responses - a.tx_responses;
 }
+/* Every page of a channel list (0x3000 RX, 0x2000 TX, 0x2010 TX friendly names) in the layout netaudio's page parser
+ * (netaudio.core.binding.parse_page) accepts: both header bytes = the entries in the page, at most per of them
+ * (16 RX, 32 TX), the strings right after the packed table, 0x8112 ("more") only on full pages. */
+static void check_channel_pages(uint16_t op, int total, int per, int isz)
+{
+    uint8_t r[1500];
+    int st = 1, pages = 0;
+    for (;;) {
+        uint8_t pg[4] = { 0, 0, (uint8_t)(st >> 8), (uint8_t)st };
+        int n = arc(op, pg, 4, r, sizeof(r)), k = r[11], want = MIN(per, total - st + 1), last = st - 1 + k >= total;
+        CHECKF(n > 12 && n <= 1472 && r[10] == k && k == want, "op %04x ch %d page %d: %d bytes, header %d/%d, want %d",
+               op, total, st, n, r[10], k, want);
+        CHECKF(get16(r + 8) == (last ? 1 : 0x8112), "op %04x ch %d page %d: code %04x", op, total, st, get16(r + 8));
+        if (k != want || k == 0) return;
+        int heap = 12 + k * isz + (op == 0x2010 ? 4 : 0), lo = 0xffff;   /* 0x2010: a u32 0 before the first name */
+        for (int j = 0; j < k; j++) {
+            const uint8_t *it = r + 12 + j * isz;
+            int id = st + j, no = get16(it + (op == 0x3000 ? 10 : op == 0x2000 ? 6 : 4));
+            char def[8];
+            snprintf(def, sizeof(def), "%02d", id);
+            const char *want_nm = op == 0x3000 ? p.rxname[id - 1] : op == 0x2000 ? def : p.txname[id - 1];
+            CHECKF(get16(it) == id && no >= heap && no < n && !strcmp((char *)r + no, want_nm),
+                   "op %04x ch %d entry %d: id %d name @%d", op, total, id, get16(it), no);
+            if (op != 0x2010) { CHECK(get16(it + 4) == heap); lo = MIN(lo, get16(it + 4)); }
+            else lo = MIN(lo, no);
+        }
+        CHECKF(lo == heap, "op %04x ch %d page %d: strings at %d, table ends at %d", op, total, st, lo, heap);
+        pages++;
+        if (last) break;
+        st += k;
+    }
+    CHECK(pages == (total + per - 1) / per);
+}
+static void test_channel_pages(void)
+{
+    TEST("ARC channel lists: packed pages, at most 16 RX / 32 TX entries, for 2, 17, 33, 48 and 64 channels");
+    static const int counts[] = { 2, 17, 33, 48, 64 };
+    char out[64], cmd[32];
+    for (size_t i = 0; i < sizeof(counts) / sizeof(counts[0]); i++) {
+        setup();
+        snprintf(cmd, sizeof(cmd), "channels %d", counts[i]);
+        CHECK(ctl_exec(&p, cmd, out, sizeof(out)) == 0);
+        check_channel_pages(0x3000, counts[i], 16, 20);
+        check_channel_pages(0x2000, counts[i], 32, 8);
+        check_channel_pages(0x2010, counts[i], 32, 6);
+        teardown();
+    }
+    TEST("ARC 0x3000 with 31-character RX names and a subscription: still full pages of 16 (no soft-limit cut)");
+    setup();
+    for (int k = 0; k < p.channels; k++) {
+        char nm[40];
+        snprintf(nm, sizeof(nm), "ReceiveChannelLongNameXYZW%02d___", k + 1);
+        port_rename_rx(&p, k, nm);
+    }
+    CHECK(strlen(p.rxname[0]) == 31);
+    CHECK(sub_subscribe(&p, 0, "LongTransmitChannelName", "SomeLongTransmitterHostName") == 0);
+    check_channel_pages(0x3000, p.channels, 16, 20);
+    teardown();
+}
 static void test_small_builds(void)
 {
     uint8_t r[1500]; int code;
     static const uint8_t pg1[4] = { 0, 0, 0, 1 };
     TEST("full build: 64 TX channels advertised (the reference for the smaller builds)");
-    CHECK(setup_caps(0, 48000) == 0); CHECK(chan_answers() == 64); teardown();
+    CHECK(setup_caps(0, 48000) == 0); CHECK(chan_answers() == 64);
+    CHECK(arc(0x1000, NULL, 0, r, sizeof(r)) == 44);
+    CHECK(get16(r + 18) == 32 && get16(r + 20) == 32);   /* max channels per TX / RX flow = the build's 32 */
+    teardown();
+
+    TEST("transmit-only build (2 TX flows x 8 ch, 4 columns, 0 RX flows): ARC 0x1000 offsets 8/10 = 4 / 0");
+    CHECK(setup_caps(0x00020804u, 48000) == 0);
+    CHECK(arc(0x1000, NULL, 0, r, sizeof(r)) == 44);
+    CHECK(get16(r + 12) == 4 && get16(r + 22) == 2 && get16(r + 24) == 0);
+    CHECK(get16(r + 18) == 4 && get16(r + 20) == 0);   /* 4 TX channels fit one 8-slot flow; no RX flows */
+    teardown();
 
     TEST("receive-only build (2 RX flows x 8 ch, 2 columns, 0 TX flows): starts with no TX channels or TX flows");
     CHECK(setup_caps(0x02000802u, 48000) == 0);
     CHECK(p.channels == 2 && port_tx_channels(&p) == 0);
     CHECK(arc(0x1000, NULL, 0, r, sizeof(r)) == 44);
-    CHECK(get16(r + 12) == 0 && get16(r + 14) == 2 && get16(r + 18) == 2);
+    CHECK(get16(r + 12) == 0 && get16(r + 14) == 2);
     CHECK(get16(r + 22) == 0 && get16(r + 24) == 2 && get16(r + 26) == 2);
+    CHECK(get16(r + 18) == 0 && get16(r + 20) == 2);   /* max channels per TX / RX flow: no TX, 2 RX channels */
     arc(0x2000, pg1, 4, r, sizeof(r)); CHECK(r[11] == 0);   /* no TX channels listed */
     arc(0x2200, pg1, 4, r, sizeof(r)); CHECK(r[11] == 0);
     CHECK(request(1, 8, 50000, &code) < 0 && code != 1);
@@ -408,6 +478,7 @@ static void test_small_builds(void)
     CHECK(arc(0x1000, NULL, 0, r, sizeof(r)) == 44);
     CHECK(get16(r + 12) == 2 && get16(r + 14) == 2 && get16(r + 18) == 2);
     CHECK(get16(r + 22) == 1 && get16(r + 24) == 2 && get16(r + 26) == 4);
+    CHECK(get16(r + 18) == 2 && get16(r + 20) == 2);   /* max channels per TX / RX flow: 2 channels, 8 slots */
     CHECK(chan_answers() == 2);
     char out[128];
     CHECK(ctl_exec(&p, "channels 3", out, sizeof(out)) == -1);
@@ -463,5 +534,6 @@ int main(void)
     test_control_eof(); test_control_errors(); test_capabilities(); test_discovery_flood();
     test_cancel_pending(); test_latency_transitions(); test_latency_fit(); test_rate_transitions(); test_distinct_discovery_clients();
     test_small_builds();
+    test_channel_pages();
     return t_done("test_edges");
 }

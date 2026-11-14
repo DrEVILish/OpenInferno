@@ -11,6 +11,7 @@
 #include <stdlib.h>
 
 #define PACKET_SIZE_SOFT_LIMIT 800   /* proto_arc.rs */
+#define RX_PAGE_LIMIT 1400           /* 0x3000 pages: one entry (at most 148 bytes) past it still fits a 1500-byte reply */
 
 /* the item writer of serialize_items: writes strings / descriptors into b, the item (size isz) into item; 0 = skip */
 typedef int (*item_fn)(port_t *p, int index, bbuf_t *b, uint8_t *item, void *ctx);
@@ -39,6 +40,41 @@ static int serialize_items(port_t *p, int space, int start, int total, int isz, 
         actual++;
     }
     b->d[RR_HDR + 1] = (uint8_t)actual;
+    return more;
+}
+
+/* proto_arc.rs serialize_page (upstream dbd9570, U13), for the channel lists: the table holds only the entries sent, the
+ * strings follow it, and both header bytes carry that count. With serialize_items a short page keeps zeroed slots
+ * between table and strings and claims the full page size, which netaudio rejects as malformed. offs: bit w set =
+ * the item's u16 word w is a string/descriptor offset (moved down with the strings); lim: the soft size limit.
+ * Returns 1 if there are more. */
+static int serialize_page(port_t *p, int space, int start, int total, int isz, unsigned offs, int lim, item_fn fn,
+                          void *ctx, bbuf_t *b)
+{
+    int left = MAX(total - start, 0), n = MIN(space, left), more = left > n, k = 0;
+    uint8_t items[32][32];
+    bb_init(b);
+    bb_zero(b, RR_HDR + 2 + (size_t)(n * isz));
+    size_t table = RR_HDR + 2, heap = table + (size_t)(n * isz), heap_end = b->pos;
+    for (int i = start; i < start + n; i++) {
+        size_t entry_start = b->pos;
+        if (!fn(p, i, b, items[k], ctx)) continue;
+        /* as upstream: the entry that crosses the limit, and the data it wrote, go on the next page */
+        if (b->pos >= (size_t)lim && k) { more = 1; heap_end = entry_start; break; }
+        heap_end = b->pos;
+        k++;
+    }
+    uint16_t gap = (uint16_t)((n - k) * isz);
+    for (int j = 0; j < k; j++) {
+        for (int w = 0; w < isz / 2; w++) {
+            uint16_t v = get16(items[j] + 2 * w);
+            if ((offs >> w & 1) && v) put16(items[j] + 2 * w, (uint16_t)(v - gap));
+        }
+        memcpy(b->d + table + (size_t)(j * isz), items[j], (size_t)isz);
+    }
+    memmove(b->d + heap - gap, b->d + heap, heap_end - heap);
+    b->len = b->pos = heap_end - gap;
+    b->d[RR_HDR] = b->d[RR_HDR + 1] = (uint8_t)k;
     return more;
 }
 
@@ -195,8 +231,8 @@ int arc_handle(port_t *p, const uint8_t *req, int len, uint8_t *out, int max)
         x[1] = 0x30;   /* Flags2: supports_tx_channel_rename (bit 4), supports_tx_multicast (bit 5) */
         put16(x + 2, (uint16_t)port_tx_channels(p)); put16(x + 4, (uint16_t)port_rx_channels(p));
         put16(x + 6, 4);
-        put16(x + 8, (uint16_t)MIN(p->caps_fch, p->channels));
-        put16(x + 10, 8);
+        put16(x + 8, (uint16_t)MIN(p->caps_fch, port_tx_channels(p)));   /* maximum_transmit_flow_channel_slots */
+        put16(x + 10, (uint16_t)(p->caps_rxf ? MIN(p->caps_fch, p->channels) : 0));   /* maximum_receive_flow_channel_slots */
         put16(x + 12, (uint16_t)p->caps_txf); put16(x + 14, (uint16_t)p->caps_rxf);
         put16(x + 16, (uint16_t)(port_tx_channels(p) + port_rx_channels(p)));
         put16(x + 18, 1); put16(x + 20, 1);
@@ -226,21 +262,24 @@ int arc_handle(port_t *p, const uint8_t *req, int len, uint8_t *out, int max)
     case 0x3000: {   /* receive channels */
         int st = start_index(c, clen);
         if (st < 0) { r = respond(req, 0xFFFF, NULL, 0, out, max); break; }
-        int more = serialize_items(p, MIN(p->channels, 32), st, p->channels, 20, rx_item, &cx, b);
+        /* netaudio takes at most 16 entries per RX page, and rejects a cut one (fewer than 16 and "more"): 16 entries
+         * with 31-character names already pass 800 bytes, so RX pages may grow to the MTU.
+         * shortcut: 16 entries with long names and many long subscriptions still cut; dedupe strings if that bites */
+        int more = serialize_page(p, 16, st, p->channels, 20, 0x3C, RX_PAGE_LIMIT, rx_item, &cx, b);
         r = respond_page(req, more, b, out, max);
         break;
     }
     case 0x2000: {
         int st = start_index(c, clen);
         if (st < 0) { r = respond(req, 0xFFFF, NULL, 0, out, max); break; }
-        int more = serialize_items(p, MIN(port_tx_channels(p), 32), st, port_tx_channels(p), 8, tx_item, &cx, b);
+        int more = serialize_page(p, 32, st, port_tx_channels(p), 8, 0x0C, PACKET_SIZE_SOFT_LIMIT, tx_item, &cx, b);
         r = respond_page(req, more, b, out, max);
         break;
     }
     case 0x2010: {
         int st = start_index(c, clen);
         if (st < 0) { r = respond(req, 0xFFFF, NULL, 0, out, max); break; }
-        int more = serialize_items(p, MIN(port_tx_channels(p), 32), st, port_tx_channels(p), 6, txf_item, &cx, b);
+        int more = serialize_page(p, 32, st, port_tx_channels(p), 6, 0x04, PACKET_SIZE_SOFT_LIMIT, txf_item, &cx, b);
         r = respond_page(req, more, b, out, max);
         break;
     }

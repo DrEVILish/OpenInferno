@@ -386,14 +386,25 @@ static void test_small_builds(void)
     uint8_t r[1500]; int code;
     static const uint8_t pg1[4] = { 0, 0, 0, 1 };
     TEST("full build: 64 TX channels advertised (the reference for the smaller builds)");
-    CHECK(setup_caps(0, 48000) == 0); CHECK(chan_answers() == 64); teardown();
+    CHECK(setup_caps(0, 48000) == 0); CHECK(chan_answers() == 64);
+    CHECK(arc(0x1000, NULL, 0, r, sizeof(r)) == 44);
+    CHECK(get16(r + 18) == 32 && get16(r + 20) == 32);   /* max channels per TX / RX flow = the build's 32 */
+    teardown();
+
+    TEST("transmit-only build (2 TX flows x 8 ch, 4 columns, 0 RX flows): ARC 0x1000 offsets 8/10 = 4 / 0");
+    CHECK(setup_caps(0x00020804u, 48000) == 0);
+    CHECK(arc(0x1000, NULL, 0, r, sizeof(r)) == 44);
+    CHECK(get16(r + 12) == 4 && get16(r + 22) == 2 && get16(r + 24) == 0);
+    CHECK(get16(r + 18) == 4 && get16(r + 20) == 0);   /* 4 TX channels fit one 8-slot flow; no RX flows */
+    teardown();
 
     TEST("receive-only build (2 RX flows x 8 ch, 2 columns, 0 TX flows): starts with no TX channels or TX flows");
     CHECK(setup_caps(0x02000802u, 48000) == 0);
     CHECK(p.channels == 2 && port_tx_channels(&p) == 0);
     CHECK(arc(0x1000, NULL, 0, r, sizeof(r)) == 44);
-    CHECK(get16(r + 12) == 0 && get16(r + 14) == 2 && get16(r + 18) == 2);
+    CHECK(get16(r + 12) == 0 && get16(r + 14) == 2);
     CHECK(get16(r + 22) == 0 && get16(r + 24) == 2 && get16(r + 26) == 2);
+    CHECK(get16(r + 18) == 0 && get16(r + 20) == 2);   /* max channels per TX / RX flow: no TX, 2 RX channels */
     arc(0x2000, pg1, 4, r, sizeof(r)); CHECK(r[11] == 0);   /* no TX channels listed */
     arc(0x2200, pg1, 4, r, sizeof(r)); CHECK(r[11] == 0);
     CHECK(request(1, 8, 50000, &code) < 0 && code != 1);
@@ -408,6 +419,7 @@ static void test_small_builds(void)
     CHECK(arc(0x1000, NULL, 0, r, sizeof(r)) == 44);
     CHECK(get16(r + 12) == 2 && get16(r + 14) == 2 && get16(r + 18) == 2);
     CHECK(get16(r + 22) == 1 && get16(r + 24) == 2 && get16(r + 26) == 4);
+    CHECK(get16(r + 18) == 2 && get16(r + 20) == 2);   /* max channels per TX / RX flow: 2 channels, 8 slots */
     CHECK(chan_answers() == 2);
     char out[128];
     CHECK(ctl_exec(&p, "channels 3", out, sizeof(out)) == -1);

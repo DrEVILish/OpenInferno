@@ -127,10 +127,13 @@ typedef struct port {
     dclock_t *clk;
     int      changed_rx[MAX_CH];     /* channels for the next change notification */
     int      any_changed;
+    uint64_t last_tick, tick_gap_max;   /* port_tick's worst gap (ns): how long cpu_pktq went undrained */
 } port_t;
 
 /* a build without TX flows (receive-only) has no TX channels */
 static inline int port_tx_channels(const port_t *p) { return p->caps_txf ? p->channels : 0; }
+/* a build without RX flows (transmit-only) has no RX channels */
+static inline int port_rx_channels(const port_t *p) { return p->caps_rxf ? p->channels : 0; }
 
 /* identity and adverts (port.c) */
 void port_defaults(port_t *p);

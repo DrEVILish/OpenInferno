@@ -39,7 +39,7 @@ static void test_arc(port_t *p)
     TEST("ARC 0x1000 channels and flows count (proto_arc.rs channels_and_flows_count::Response)");
     uint8_t q[64], r[1500];
     int n = arc_handle(p, q, req(q, 0x1000, NULL, 0), r, sizeof(r));
-    static const uint8_t want[34] = { 0x00, 0x30, 0x00, 0x40, 0x00, 0x40, 0x00, 0x04, 0x00, 0x20, 0x00, 0x08, 0x00, 0x10, 0x00, 0x10,
+    static const uint8_t want[34] = { 0x00, 0x30, 0x00, 0x40, 0x00, 0x40, 0x00, 0x04, 0x00, 0x20, 0x00, 0x20, 0x00, 0x10, 0x00, 0x10,
                                       0x00, 0x80, 0x00, 0x01, 0x00, 0x01 };
     CHECK(n == 44);
     CHECK(get16(r) == 0x27ff && get16(r + 2) == 44 && get16(r + 4) == 0x1234 && get16(r + 6) == 0x1000 && get16(r + 8) == 1);
@@ -54,18 +54,18 @@ static void test_arc(port_t *p)
     CHECK(!strcmp((char *)r + get16(r + 10 + 14), p->factory));
     CHECK(!strcmp((char *)r + get16(r + 10 + 6), "OpenProSeries") && !strcmp((char *)r + get16(r + 10 + 8), ":705"));
 
-    TEST("ARC 0x3000 receive channels, 64 channels in two pages of 32 (serialize_items, 0x8112 = more)");
-    static const uint8_t pg1[4] = { 0, 0, 0, 1 }, pg2[4] = { 0, 0, 0, 33 };
+    TEST("ARC 0x3000 receive channels, 64 channels in four pages of 16 (serialize_page, 0x8112 = more)");
+    static const uint8_t pg1[4] = { 0, 0, 0, 1 }, pg2[4] = { 0, 0, 0, 49 };
     n = arc_handle(p, q, req(q, 0x3000, pg1, 4), r, sizeof(r));
     CHECK(get16(r + 8) == 0x8112);
-    CHECK(r[10] == 32 && r[11] == 32);
+    CHECK(r[10] == 16 && r[11] == 16);
     const uint8_t *it = r + 12;
-    CHECK(get16(it) == 1 && get16(it + 2) == 6 && get16(it + 4) == 652);           /* common descriptor after 32 items */
-    CHECK(get32(r + 652) == 48000 && get16(r + 652 + 4 + 2) == 24 && get16(r + 652 + 14) == 0xe);
+    CHECK(get16(it) == 1 && get16(it + 2) == 6 && get16(it + 4) == 332);           /* common descriptor after 16 items */
+    CHECK(get32(r + 332) == 48000 && get16(r + 332 + 4 + 2) == 24 && get16(r + 332 + 14) == 0xe);
     CHECK(get16(it + 6) == 0 && get16(it + 8) == 0 && !strcmp((char *)r + get16(it + 10), "01"));
-    CHECK(get16(r + 12 + 31 * 20) == 32);
+    CHECK(get16(r + 12 + 15 * 20) == 16);
     n = arc_handle(p, q, req(q, 0x3000, pg2, 4), r, sizeof(r));
-    CHECK(get16(r + 8) == 1 && r[11] == 32 && get16(r + 12) == 33 && !strcmp((char *)r + get16(r + 12 + 31 * 20 + 10), "64"));
+    CHECK(get16(r + 8) == 1 && r[11] == 16 && get16(r + 12) == 49 && !strcmp((char *)r + get16(r + 12 + 15 * 20 + 10), "64"));
 
     TEST("ARC 0x2000 / 0x2010 transmit channels and friendly names; 0x2013 rename");
     n = arc_handle(p, q, req(q, 0x2000, pg1, 4), r, sizeof(r));

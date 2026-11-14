@@ -17,6 +17,8 @@
  *     --phy IFNAME          model: its PHY is an AF_PACKET socket on IFNAME
  *     --model-id N --model-ppm P --model-desk-ppm P --model-tod NS   model: pattern id, oscillator errors, start time
  *     --ctl PATH            control socket (ctl.c)      --state FILE   persistent state
+ *     --rt PRIO             run SCHED_FIFO at PRIO (1..99), memory locked: the 1 ms CPU-queue poll keeps its pace on a
+ *                           busy AMU (a SCHED_OTHER portd waited up to ~0.5 s and overflowed cpu_pktq, LOG M442)
  *     --rate 48000|96000 --latency MS --channels N --nchan N (TX channels per flow advertised, default 16)  -v / -q
  * Part of OpenProSeries inferno-portd. Licence: GPL-3.0-or-later.
  */
@@ -30,7 +32,10 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sched.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -102,7 +107,7 @@ int main(int argc, char **argv)
     uint32_t mem_size = 0x100000, stride = 0x1000, dclk = 0xFFFFFFFFu, cs2k = 0xFFFFFFFFu;
     double mppm = 0, mdppm = 0;
     const char *phy = NULL, *ctlp = NULL;
-    int have_mac = 0;
+    int have_mac = 0, rt = 0;
     double lat = -1;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
@@ -146,6 +151,7 @@ int main(int argc, char **argv)
         else if (ARG("--model-desk-ppm")) mdppm = atof(v);
         else if (ARG("--model-tod")) model_tod = strtoull(v, NULL, 0);
         else if (ARG("--ctl")) ctlp = v;
+        else if (ARG("--rt")) { rt = atoi(v); if (rt < 1 || rt > 99) { fprintf(stderr, "bad --rt (1..99)\n"); return 2; } }
         else if (ARG("--state")) snprintf(p->state_path, sizeof(p->state_path), "%s", v);
         else if (ARG("--rate")) p->fs = atoi(v) == 96000 ? 96000 : 48000;
         else if (ARG("--latency")) lat = atof(v);
@@ -193,6 +199,12 @@ int main(int argc, char **argv)
         hw->port_base = pbase; hw->clock_base = cbase; hw->dclk_base = dclk; hw->cs2k_base = cs2k;
     }
     if (portd_start(p, hw, &o)) return 1;
+    if (rt) {   /* the raw syscall: musl's sched_setscheduler() is ENOSYS by design (amu_audio_bridge does the same) */
+        struct sched_param sp = { .sched_priority = rt };
+        if (syscall(SYS_sched_setscheduler, 0, SCHED_FIFO, &sp) || mlockall(MCL_CURRENT | MCL_FUTURE))
+            LOGW("SCHED_FIFO %d / mlockall not granted: normal priority", rt);
+        else LOGI("SCHED_FIFO %d, memory locked", rt);
+    }
     ctl_t ctl;
     ctl.lfd = -1;
     if (ctlp && ctl_listen(&ctl, ctlp)) { LOGE("cannot listen on %s", ctlp); return 1; }

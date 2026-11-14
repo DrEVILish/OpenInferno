@@ -214,7 +214,7 @@ struct ptp {
     double   delay_ns;
     int      have_delay;
     servo_t  servo;
-    uint64_t good_since;        /* the run of good samples (locked, |offset| < PTP_READY_NS) began; 0: none */
+    uint64_t good_since;        /* the run of good samples (locked, |offset| < c.ready_ns) began; 0: none */
     /* leader */
     uint16_t sync_pending_seq;
     int      sync_pending;
@@ -409,7 +409,7 @@ static void sample(ptp_t *p)
             } else if (r != SERVO_UNLOCKED || ppb != 0.0) dclock_set_freq(p->clk, ppb);
             dclock_set_locked(p->clk, r == SERVO_LOCKED && fabs(off) < 20000.0);
         }
-        if (fabs(off) < PTP_READY_NS && (!p->c.steer || p->st.servo_state == SERVO_LOCKED)) {
+        if (fabs(off) < (p->c.ready_ns > 0 ? p->c.ready_ns : PTP_READY_NS) && (!p->c.steer || p->st.servo_state == SERVO_LOCKED)) {
             if (!p->good_since) p->good_since = g_now();
         } else p->good_since = 0;
     }
@@ -591,6 +591,11 @@ void ptp_tick(ptp_t *p, uint64_t now)
 }
 
 int ptp_state(const ptp_t *p) { return p->state; }
+
+double ptp_ready_ns(int sw_stamps, uint32_t ready_us)
+{
+    return ready_us ? ready_us * 1000.0 : sw_stamps ? PTP_READY_SW_NS : PTP_READY_NS;
+}
 
 int ptp_clock_ready(const ptp_t *p)
 {

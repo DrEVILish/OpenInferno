@@ -27,7 +27,7 @@
 //   0x38 CAPS        RO bits 7:0 MAX_CH, 15:8 channels per flow (MAXFCH), 23:16 TX flows, 31:24 RX flows
 //   0x3C CAPS2       RO bits 7:0 MAX_FPP, bits 9:8 MAXLAT (the largest latency mode built), bits 31:16 TX ring frames
 //   0x40 TX_PACKETS  0x44 TX_OVERRUNS  0x48 RX_OK  0x4C RX_BAD  0x50 RX_LATE  0x54 RX_EARLY  0x58 RX_UNDERRUNS
-//   0x5C RX_TS_GAPS  (all RO)
+//   0x5C RX_TS_GAPS  0x60 RX_LATE_PART (flow frames taken after their play time: played as silence) (all RO)
 // Table words (TBL_ADDR, 10 bits): 0x000 + flow x 16 + w: TX flow (inferno_tx.v); 0x100 + flow x 16 + w: RX flow
 //   configuration, 0x200 + flow x 16 + w: RX flow status (inferno_rx.v). The table RAMs have registered reads; the
 //   word at TBL_ADDR is ready one clock after TBL_ADDR changes (long before the next bus access).
@@ -77,7 +77,8 @@ module inferno_regs #(
     input  wire [NTXF-1:0] tx_running,
     input  wire [31:0] media_sec,
     input  wire [16:0] media_sub,
-    input  wire [31:0] tx_packets, tx_overruns, rx_ok, rx_bad, rx_late, rx_early, rx_underruns, rx_ts_gaps
+    input  wire [31:0] tx_packets, tx_overruns, rx_ok, rx_bad, rx_late, rx_early, rx_underruns, rx_ts_gaps,
+    input  wire [31:0] rx_late_part
 );
 `include "inferno_lat.vh"
     reg  [9:0] ta;
@@ -148,6 +149,7 @@ module inferno_regs #(
             8'h54: rdata = rx_early;
             8'h58: rdata = rx_underruns;
             8'h5C: rdata = rx_ts_gaps;
+            8'h60: rdata = rx_late_part;
             default: rdata = 32'd0;
         endcase
     end

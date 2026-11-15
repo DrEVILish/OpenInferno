@@ -146,7 +146,10 @@ upstream Inferno, and the control-plane plan (§9) is based on upstream's module
   is bad (upstream floors it).
 - **The packet time** T = seconds × fs + sub mod 2³² by a 17-step shift-and-add during the header.
 - **Late / early:** a packet wholly before the playout point is late; one reaching past the buffer is early (NF = 256
-  frames ahead at 48 kHz, 512 at 96 kHz). Both are dropped and counted.
+  frames ahead at 48 kHz, 512 at 96 kHz). Both are dropped and counted. A packet taken whose first frames were
+  already played (its last frame is not behind the playout point) plays those frames as silence: `RX_LATE_PART`
+  counts each flow frame whose tag is written at or behind the playout point (one per flow and frame, so ×
+  channels per flow = samples lost).
 - **Commit:** samples are staged per packet (two banks of 512) and copied into the jitter buffer only after a good
   FCS, one a clock; in parallel the tag engine marks each frame time {mask of the flows that wrote it, T[15:0]}
   (2 clocks a frame).
@@ -262,6 +265,7 @@ ACE keep their addresses.
 | 0x38 | CAPS | RO | bits 7:0 MAX_CH (64), 15:8 channels per flow (32), 23:16 TX flows (16), 31:24 RX flows (16); `inferno-portd` uses these as its run-time limits |
 | 0x3C | CAPS2 | RO | bits 7:0 MAX_FPP (32), bits 9:8 MAXLAT (the largest latency mode built, 3 = 5 ms), bits 31:16 TX ring frames (128) |
 | 0x40…0x5C | counters | RO | TX_PACKETS, TX_OVERRUNS, RX_OK, RX_BAD, RX_LATE, RX_EARLY, RX_UNDERRUNS, RX_TS_GAPS |
+| 0x60 | RX_LATE_PART | RO | flow frames of taken packets written after their play time (played as silence); 32 bits, wraps, reset clears, not cleared by a read (as the counters above) |
 
 Table words (TBL_ADDR; block RAM, the word at TBL_ADDR is ready one clock after the address changes):
 
@@ -547,7 +551,8 @@ advertised `nchan=16` (option `--nchan`), `fpp=32,2`, `latency_ns` = the port's 
   (`AMU_QEMU`), then `AMU_CHECK` (a static-binary checker script) when set. `-r` only fakes the kernel version (qemu
   still runs the glibc `ppc` build, so it cannot catch this): this is not a real-AMU run. The source must not include
   `<linux/...>` headers (the musl sysroot has none; `check-unit` greps for them).
-- `status` keys include `clock_fail=`, `cs2k_ppm=` and `ptp_leader=` (was `ptp_master=`).
+- `status` keys include `clock_fail=`, `cs2k_ppm=` and `ptp_leader=` (was `ptp_master=`), and `hw_rx_late_part=`
+  (`RX_LATE_PART`, beside `hw_rx_late=` / `hw_rx_early=`).
 
 ## 10. Milestones
 

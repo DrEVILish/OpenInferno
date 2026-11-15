@@ -5,9 +5,11 @@
  */
 #include "test.h"
 #include "../src/clock.h"
+#include "../src/ctl.h"
 #include "../src/daemon.h"
 #include "../src/fpga_model.h"
 #include "../src/mdns.h"
+#include "../src/pktq.h"
 #include "../src/ptp.h"
 #include "../src/regs.h"
 #include "../src/util.h"
@@ -340,6 +342,41 @@ static void test_model_regs(void)
     h->ops->close(h);
 }
 
+/* a packet taken whose first 3 frames are behind the play point: the model counts them in RX_LATE_PART, status shows it */
+static void test_rx_late_part(void)
+{
+    TEST("RX_LATE_PART: 3 frames of a taken packet already played count 3; status hw_rx_late_part=3");
+    model_wire_t *w = model_wire_new();
+    model_cfg_t mc;
+    memset(&mc, 0, sizeof(mc));
+    mc.id = 1; mc.maxlat = 3; mc.port_base = 0x1000; mc.clock_base = 0x1000; mc.dclk_base = 0xFFFFFFFFu;
+    mc.cs2k_base = 0xFFFFFFFFu; mc.phy_fd = -1; mc.cs2k_r0 = 0x00200000u; mc.wire = w;
+    hw_t *a = model_open(&mc);
+    mc.id = 2; mc.wire_side = 1;
+    static port_t q;
+    port_defaults(&q);
+    q.n = 2; snprintf(q.desk, sizeof(q.desk), "LP"); q.cfg_ip = IP4(169, 254, 12, 2);
+    portd_opts_t o = {0}; o.log_sync = -2;
+    CHECK(portd_start(&q, model_open(&mc), &o) == 0);
+    uint32_t dip = IP4(239, 1, 2, 3), cfg[3] = { dip, 4321, 0 }, w0 = (3u << 16) | (2u << 8) | 1u;
+    tbl_write(q.hw, TBL_RX(15, 1), cfg, 3);
+    tbl_write(q.hw, TBL_RX(15, 0), &w0, 1);
+    /* virtual time stands still: the play point is the media clock now minus the offset in use */
+    uint32_t play = port_rd(q.hw, AOIP_MEDIA_TS) - (port_rd(q.hw, INF_LAT_STATUS) & 0x7FF), t = play - 3;
+    uint8_t f[99];
+    memset(f, 0, sizeof(f));
+    f[12] = 0x08; f[14] = 0x45; put16(f + 16, 85); f[22] = 64; f[23] = 17; put32(f + 26, IP4(169, 254, 9, 9));
+    put32(f + 30, dip); put16(f + 34, 4000); put16(f + 36, 4321); put16(f + 38, 8 + 9 + 8 * 2 * 3);
+    put32(f + 47, t);   /* seconds 0, sub = t: the packet time T = t */
+    port_wr(a, CQ_CTRL, 1);
+    CHECK(pktq_send(a, f, sizeof(f), 0, 0) == 0);
+    char out[8192];
+    CHECK(ctl_exec(&q, "status", out, sizeof(out)) == 0);
+    CHECKF(strstr(out, "hw_rx_ok=1\n") && strstr(out, "hw_rx_late=0\n") && strstr(out, "hw_rx_late_part=3\n"), "%s",
+           strstr(out, "hw_rx_ok=") ? strstr(out, "hw_rx_ok=") : out);
+    portd_stop(&q); q.hw->ops->close(q.hw); a->ops->close(a);
+}
+
 static void test_restored_channels(void)
 {
     TEST("restored 96 kHz configuration respects the hardware channel limit");
@@ -386,6 +423,7 @@ int main(void)
     CHECK(!strcmp(P.name, "MON-2") && P.devid[3] == 0xFF && P.devid[4] == 0xFE);
     CHECK(P.advertised);
     test_restored_channels();
+    test_rx_late_part();
     test_arc(&P);
     test_flowctl(&P);
     return t_done("test_unit");

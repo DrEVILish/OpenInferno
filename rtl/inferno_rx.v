@@ -23,7 +23,9 @@
 // the column owner's mask bit is set, else silence. After the read the tag is cleared (swept), so a frame is never
 // played twice and a flow that stops leaves silence, not old audio. Several flows (from several transmitters) can
 // fill one port frame. Packets wholly before play_ts count as late, packets reaching past the buffer (NF frames
-// ahead at 48 kHz, 2 NF at 96 kHz) as early; both are dropped.
+// ahead at 48 kHz, 2 NF at 96 kHz) as early; both are dropped. A packet taken whose first frames were already played
+// (its last frame is not behind play_ts) loses those frames to silence: late_part counts them, one per flow and frame
+// whose tag is written at or behind play_ts (after that frame's tag read), so the loss is not hidden.
 //
 // Flow configuration (NFLOW x 16 words, through inferno_regs.v; address = flow * 16 + w, block RAM, reads registered):
 //   w0 CTRL  bit0 enable, bits 13:8 channels in the flow (1..MAXFCH), bits 18:16 bytes per sample (2, 3, 4)
@@ -82,6 +84,7 @@ module inferno_rx #(
     output reg  [31:0] late,
     output reg  [31:0] early,
     output reg  [31:0] underruns,      // frames played with no flow's data while enabled
+    output reg  [31:0] late_part,      // flow frames taken but written after their play time (played as silence)
     output reg  [31:0] ts_gaps         // a flow's packet did not start where its previous one ended
 );
     localparam FW  = `CLOG2(NFLOW);
@@ -268,6 +271,7 @@ module inferno_rx #(
         ttag_q <= tags[tag_a];
     end
     always @(posedge clk) sweep_d <= sweep;
+    wire [15:0] t_behind = play_r[15:0] - tt[15:0];               // >= 0: frame tt's tag was read already
 
     always @(posedge clk) begin
         cwe <= 1'b0; fin <= 1'b0;
@@ -275,6 +279,7 @@ module inferno_rx #(
             idx <= 11'd0; drop <= 1'b1; matched <= 1'b0; srch <= 1'b0; mul_on <= 1'b0; ld <= 5'd16; j_go <= 1'b0;
             sbank <= 1'b0; cbusy <= 1'b0; tbusy <= 1'b0; have <= {NFLOW{1'b0}};
             packets_ok <= 32'd0; packets_bad <= 32'd0; late <= 32'd0; early <= 32'd0; ts_gaps <= 32'd0;
+            late_part <= 32'd0;
         end else begin
             // ---- header and payload
             if (s_tvalid) begin
@@ -394,6 +399,7 @@ module inferno_rx #(
                 if (ck + 1'b1 >= cn) cbusy <= 1'b0;
             end
             // ---- commit tags: read (tph 0), merge and write (tph 1; held while the sweep has the write port)
+            if (t_wr && !t_behind[15]) late_part <= late_part + 32'd1;
             if (tbusy) begin
                 if (!tph) tph <= 1'b1;
                 else if (t_hold) tph <= 1'b0;                  // read again (the sweep may have cleared this tag)

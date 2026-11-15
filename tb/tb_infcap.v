@@ -142,14 +142,14 @@ module tb_infcap;
     wire        claim, out_valid, out_frame_ok;
     wire [5:0]  out_ch;
     wire [23:0] out_sample;
-    wire [31:0] p_ok, p_bad, late, early, underruns, ts_gaps;
+    wire [31:0] p_ok, p_bad, late, early, underruns, ts_gaps, late_part;
     inferno_rx #(.MAX_CH(MAXCH), .NFLOW(16), .MAXFCH(32), .MAX_SMP(512), .NF(`NF)) dut_rx (
         .clk(clk), .rst(rst), .enable(1'b1), .n_out(CH[6:0]), .media_fs(FS[16:0]), .media_ts(media_ts),
         .tbl_we(rtbl_we), .tbl_waddr(rtbl_a), .tbl_wdata(rtbl_d), .tbl_raddr(rtbl_a), .tbl_rdata(rtbl_q),
         .s_tdata(r_data), .s_tvalid(r_valid), .s_tlast(r_last), .s_tuser(r_user), .claim(claim),
         .frame_strobe(frame_strobe), .play_ts(media_ts - {22'd0, OFFSET}), .out_valid(out_valid), .out_ch(out_ch),
         .out_sample(out_sample), .out_frame_ok(out_frame_ok), .packets_ok(p_ok), .packets_bad(p_bad), .late(late),
-        .early(early), .underruns(underruns), .ts_gaps(ts_gaps));
+        .early(early), .underruns(underruns), .ts_gaps(ts_gaps), .late_part(late_part));
 
     // ---- the host view of the port (CAPS, JB_GEOM, CTRL) at this MAX_CH
     reg  [7:0]  reg_a = 8'h38;
@@ -160,7 +160,7 @@ module tb_infcap;
         .fs_now(FS[16:0]), .link_offset(32'd0), .play_offset(), .fpp_auto(), .tx_tbl_we(), .rx_tbl_we(), .tbl_addr(),
         .tbl_wdata(), .tx_tbl_rdata(32'd0), .rx_tbl_rdata(32'd0), .tx_pending(16'd0), .tx_running(16'd0),
         .media_sec(32'd0), .media_sub(17'd0), .tx_packets(32'd0), .tx_overruns(32'd0), .rx_ok(32'd0), .rx_bad(32'd0),
-        .rx_late(32'd0), .rx_early(32'd0), .rx_underruns(32'd0), .rx_ts_gaps(32'd0));
+        .rx_late(32'd0), .rx_early(32'd0), .rx_underruns(32'd0), .rx_ts_gaps(32'd0), .rx_late_part(late_part));
 
     integer errors = 0;
     // ---- what the judge saw of each packet: frames from the playout point to its first frame (below 0: late) and to
@@ -282,6 +282,12 @@ module tb_infcap;
         reg_a <= 8'h38; #1 if (reg_q[7:0] != MAXCH) begin errors = errors + 1; $display("CAPS 0x%08x: MAX_CH %0d, want %0d", reg_q, reg_q[7:0], MAXCH); end
         reg_a <= 8'h34; #1 if (reg_q[23:16] != (HI ? MAXCH / 2 : MAXCH)) begin errors = errors + 1; $display("JB_GEOM 0x%08x: %0d columns", reg_q, reg_q[23:16]); end
         reg_a <= 8'h04; #1 if (reg_q[14:8] != MAXCH) begin errors = errors + 1; $display("CTRL 0x%08x: %0d columns played", reg_q, reg_q[14:8]); end
+        // RX_LATE_PART (0x60) counts flow frames played as silence because they came in after their play time: every
+        // flow here carries CPF channels (CH a multiple of CPF), so it x CPF must equal the samples lost (0 on time)
+        reg_a <= 8'h60; #1
+        if (reg_q != late_part || reg_q * CPF != lost) begin
+            errors = errors + 1; $display("RX_LATE_PART %0d (port %0d) x %0d ch != %0d samples lost", reg_q, late_part, CPF, lost);
+        end else $display("tb_infcap rx_late_part %0d matches %0d samples lost", reg_q, lost);
         if (checked < NCHECK) begin errors = errors + 1; $display("only %0d frames checked", checked); end
 `ifdef GOLDEN
         if (gpk != 16) begin errors = errors + 1; $display("only %0d golden packets", gpk); end

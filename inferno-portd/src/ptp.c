@@ -206,6 +206,7 @@ struct ptp {
     uint64_t start, next_sync, next_dreq, next_bmca, last_leader_rx;
     int      lost;              /* following, no Sync from the leader for 4 s (the desk clock is in its source-fail mode) */
     uint16_t sync_seq, dreq_seq;
+    uint8_t dreq_tag; /* Outstanding request epoch; zero means no TX stamp is expected. */
     fm_t     fm[NFM];
     int      parent;            /* fm index followed */
     /* follower measurement */
@@ -272,19 +273,26 @@ static int may_lead(const ptp_t *p) { return p->c.role == PTP_ROLE_AUTO || p->c.
 static int may_follow(const ptp_t *p) { return p->c.role == PTP_ROLE_AUTO || p->c.role == PTP_ROLE_FOLLOWER; }
 static uint64_t sync_ns(const ptp_t *p) { return (uint64_t)(1e9 * pow(2.0, p->c.log_sync)); }
 
-static void set_state(ptp_t *p, int s)
+static void set_state(ptp_t *p, int s, int new_parent)
 {
-    if (p->state == s) return;
+    if (p->state == s && !new_parent) return;
+    if (s == PTP_SLAVE && p->mute) p->mute(p->mute_ctx);
     LOGI("PTP: %s -> %s", ptp_state_name(p->state), ptp_state_name(s));
     int was = p->state;
     p->state = s;
     p->t1_ok = p->t2_ok = p->t3_ok = 0;
     p->have_delay = 0;
-    p->t1 = p->t2 = 0;
+    p->t1 = p->t2 = p->t3 = p->t4 = 0;
+    p->sync_wait_seq = 0;
+    p->sync_pending = 0;
+    p->dreq_tag = 0;
+    ++p->dreq_seq; /* Reject responses belonging to the previous acquisition. */
     p->cold_done = 0;
     if (p->clk) p->servo.last_ppb = dclock_freq(p->clk);
     servo_init(&p->servo);
-    p->good_since = 0;
+    p->good_since = p->last_sample = p->bad_since = 0;
+    p->st.servo_state = SERVO_UNLOCKED;
+    p->delay_ns = 0;
     p->last_leader_rx = g_now();   /* the 4 s source-loss timer runs from here, never from a Sync before a gap */
     p->lost = 0;
     if (p->clk && p->c.steer) {
@@ -359,7 +367,8 @@ static void send_dreq(ptp_t *p)
     uint8_t b[124];
     ptp1_put_sync(b, &h, &s);
     p->t3_ok = 0;
-    send_msg(p, 1, b, 124, 1, 2);
+    p->dreq_tag = (uint8_t)(2 + p->dreq_seq % 254);
+    send_msg(p, 1, b, 124, 1, p->dreq_tag);
     p->st.dreq_tx++;
 }
 
@@ -375,7 +384,8 @@ static void on_txstamp(void *ctx, uint8_t tag, const stamp_t *ts)
         send_msg(p, 0, b, 52, 0, 0);
         p->sync_pending = 0;
         p->st.fups_tx++;
-    } else if (tag == 2) {
+    } else if (p->dreq_tag && tag == p->dreq_tag) {
+        p->dreq_tag = 0;
         p->t3 = ts_ns(ts->sec, ts->ns);
         p->t3_ok = 1;
     }
@@ -570,7 +580,7 @@ void ptp_set_role(ptp_t *p, int role, int steer)
     p->c.role = role;
     p->c.steer = steer;
     p->parent = -1;
-    set_state(p, role == PTP_ROLE_OFF ? PTP_DISABLED : PTP_LISTENING);
+    set_state(p, role == PTP_ROLE_OFF ? PTP_DISABLED : PTP_LISTENING, 0);
     p->start = g_now();
 }
 
@@ -599,17 +609,18 @@ static void bmca(ptp_t *p, uint64_t now)
         /* listen for a while before leading (a better master may be there) */
         if (p->state != PTP_MASTER && (int64_t)(now - p->start) < (int64_t)(4 * MAX(sync_ns(p), 1000000000ull))) return;
         p->parent = -1;
-        set_state(p, PTP_MASTER);
+        set_state(p, PTP_MASTER, 0);
         return;
     }
     if (best >= 0 && may_follow(p)) {
-        if (p->parent != best) { p->parent = best; p->t1_ok = p->t2_ok = 0; p->have_delay = 0; }
+        int changed = p->parent != best;
+        p->parent = best;
         memcpy(p->st.leader_uuid, p->fm[best].uuid, 6);
-        set_state(p, PTP_SLAVE);
+        set_state(p, PTP_SLAVE, changed);
         return;
     }
     p->parent = -1;
-    set_state(p, best >= 0 ? PTP_PASSIVE : PTP_LISTENING);
+    set_state(p, best >= 0 ? PTP_PASSIVE : PTP_LISTENING, 0);
 }
 
 void ptp_tick(ptp_t *p, uint64_t now)

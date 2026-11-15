@@ -219,10 +219,62 @@ static void saturation(void)
         }
     }
 }
+/* Both leaders keep sending: replacing a qualified parent is not source loss. */
+static void overlapping_parent(void)
+{
+    if(A.hw) { portd_stop(&A); A.hw->ops->close(A.hw); }
+    if(B.hw) { portd_stop(&B); B.hw->ops->close(B.hw); }
+    W=model_wire_new(); port_defaults(&A); port_defaults(&B);
+    A.n=0; B.n=1; A.mac[5]=0x11; B.mac[5]=0x22;
+    snprintf(A.desk,sizeof(A.desk),"FOH");
+    snprintf(B.desk,sizeof(B.desk),"MON");
+    A.lat_mode=B.lat_mode=3;
+    portd_opts_t oa={1,0,0,0,0,PTP_ROLE_LEADER,1,-2,0,0,0};
+    portd_opts_t ob={1,0,0,0,0,PTP_ROLE_FOLLOWER,1,-2,0,0,0};
+    CHECK(portd_start(&A,mk(0,1,0,TOD_L),&oa)==0);
+    CHECK(portd_start(&B,mk(1,2,0,TOD_L),&ob)==0);
+    sub_subscribe(&B,0,"01","FOH-1"); run(30);
+    CHECK(ptp_clock_ready(B.ptp) && enables(&B)==3);
+    ptp_stats_t old, s; ptp_get_stats(B.ptp,&old);
+    model_stats_t before, after; model_get_stats(B.hw,&before);
+    CHECK(before.pat_ok>0);
+    ptp_stats_t a_before; ptp_get_stats(A.ptp,&a_before);
+    port_t C; port_defaults(&C); C.n=2; C.mac[5]=0x05;
+    snprintf(C.desk,sizeof(C.desk),"NEW");
+    portd_opts_t oc=oa; oc.stratum=1;
+    uint32_t sec,ns; dclock_now(A.clk,&sec,&ns);
+    CHECK(portd_start(&C,mk(0,3,0,(uint64_t)sec*1000000000ull+ns),&oc)==0);
+    uint64_t selected=0, first_locked=0, reopened=0, leak=0;
+    for(uint64_t end=vt+30000000000ull; vt<end;) {
+        int off=selected && !enables(&B);
+        model_get_stats(B.hw,&before);
+        vt+=1000000ull;
+        /* C services shared upstream requests; A remains a live transmitting leader. */
+        port_tick(&C,vt); port_tick(&A,vt); port_tick(&B,vt);
+        ptp_get_stats(B.ptp,&s); model_get_stats(B.hw,&after);
+        if(!selected && memcmp(s.leader_uuid,old.leader_uuid,6)) {
+            selected=vt;
+            CHECK(s.state==PTP_SLAVE && ptp_state(A.ptp)==PTP_MASTER);
+            ptp_stats_t live; ptp_get_stats(A.ptp,&live);
+            CHECK(live.syncs_tx>a_before.syncs_tx);
+            CHECK(!ptp_clock_ready(B.ptp) && enables(&B)==0);
+            dclock_stats_t d; dclock_get_stats(B.clk,&d);
+            CHECK(!d.locked && s.servo_state!=SERVO_LOCKED);
+        }
+        if(selected && s.servo_state==SERVO_LOCKED && !first_locked) first_locked=vt;
+        if(selected && enables(&B)) { reopened=vt; break; }
+        if(off && !enables(&B)) leak+=after.rx_media-before.rx_media+after.tx_media-before.tx_media;
+    }
+    CHECK(selected && first_locked && reopened);
+    CHECK(first_locked>=selected+1750000000ull);
+    CHECK(reopened>=first_locked+PTP_READY_HOLD_NS);
+    CHECK(leak==0);
+    portd_stop(&C); C.hw->ops->close(C.hw);
+}
 int main(void)
 {
     g_now_ns=vnow; g_log_level=LOG_WARN; rnd_seed(7);
-    boundaries(); saturation();
+    boundaries(); saturation(); overlapping_parent();
     for(int k=0;k<13;k++) qualify(k);
     return t_done("production qualification");
 }

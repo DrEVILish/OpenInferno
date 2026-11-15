@@ -78,3 +78,20 @@ to one increment count: at the maximum accepted age of 100ms,
 50MHz * 0.1s / 2^24 = 0.2981ns. The anchor prevents cumulative small writes
 from silently drifting the epoch. test_stamp and test_tx_poll prove dither
 acceptance and rejection beyond the pair. No lock/e2e policy was relaxed.
+
+## Live parent replacement review regression
+
+The overlapping-source test keeps source A transmitting as MASTER while a
+separate, better-stratum source C qualifies. The follower starts with verified
+packet playback and readiness on A; no loss timeout or intervening PTP state
+transition occurs. On selecting C it must synchronously close INF_CTRL, clear
+readiness and lock, then acquire fresh strict samples and hold readiness for
+another second before reopening. Wholly muted ticks have no RX/TX leakage.
+This fixture shares the upstream wire endpoint between the two leaders; it
+checks the follower gate and qualification, not three-way media routing.
+
+On the old head the assertions for immediate gate closure, lock reset and fresh
+acquisition/hold fail (`pr3-parent-red.log`). Parent changes now reset the entire
+tracking epoch even when the state stays SLAVE. Pending Delay_Req TX stamps use
+request-specific tags, so a completion from the previous epoch cannot restore
+old t3. No thresholds, slew budgets or mute persistence rules changed.

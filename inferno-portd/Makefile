@@ -23,7 +23,7 @@ SRCS    := util.c hw_devmem.c fpga_model.c pktq.c net.c mdns.c port.c arc.c flow
            ptp.c clock.c ctl.c daemon.c
 OBJS_H  := $(SRCS:%.c=build/host/%.o)
 OBJS_P  := $(SRCS:%.c=$(PPCB)/%.o)
-TESTS   := test_unit test_inproc test_clock test_net test_edges test_hw
+TESTS   := test_d4 test_unit test_inproc test_clock test_net test_edges test_hw
 
 .PHONY: all ppc amu check check-unit check-ppc check-amu check-e2e check-cli clean
 all: build/host/inferno-portd

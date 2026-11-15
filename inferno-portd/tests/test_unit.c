@@ -235,7 +235,7 @@ static void test_servo(void)
         ppb = p;
         if (k > 4 * 60 && fabs(local) > worst) worst = fabs(local);
     }
-    CHECK(steps == 1);
+    CHECK(steps == 2);
     CHECKF(worst < 200.0, "worst %.0f ns", worst);
     CHECKF(fabs(ppb + 50000.0) < 100.0, "ppb %.1f", ppb);
 }

@@ -196,6 +196,8 @@ typedef struct {
 } fm_t;
 
 struct ptp {
+    void (*mute)(void *);
+    void *mute_ctx;
     net_t   *n;
     dclock_t *clk;
     ptp_cfg_t c;
@@ -214,6 +216,7 @@ struct ptp {
     double   delay_ns;
     int      have_delay;
     servo_t  servo;
+    uint64_t last_sample, bad_since;
     uint64_t good_since;        /* the run of good samples (locked, |offset| < c.ready_ns) began; 0: none */
     int      cold_done;         /* the first Sync followed since the start was seen (its step: sample) */
     /* leader */
@@ -277,6 +280,7 @@ static void set_state(ptp_t *p, int s)
     p->state = s;
     p->t1_ok = p->t2_ok = p->t3_ok = 0;
     p->have_delay = 0;
+    if (p->clk) p->servo.last_ppb = dclock_freq(p->clk);
     servo_init(&p->servo);
     p->good_since = 0;
     p->last_leader_rx = g_now();   /* the 4 s source-loss timer runs from here, never from a Sync before a gap */
@@ -394,21 +398,45 @@ static void sample(ptp_t *p)
 {
     if (!p->t1_ok || !p->t2_ok) return;
     int64_t ms = ts_diff(p->t2, p->t1);
-    if (!p->have_delay && !p->cold_done && p->c.steer && p->clk) {
-        /* cold start: the first Sync followed steps on t2 - t1 alone, no Delay_Resp needed (the delay is us). Once per
-         * start: a re-acquire keeps the servo's rules (the design note's PR 3 moves those) */
+    uint64_t now = g_now();
+    double observed = (double)ms - (p->have_delay ? p->delay_ns : 0);
+    if (p->c.steer && p->clk && p->st.servo_state == SERVO_LOCKED) {
+        if (fabs(observed) > 200000) {
+            if (!p->bad_since) p->bad_since = now;
+            if (now - p->bad_since < 500000000ull) {
+                /* The approved persistence leaves RX out of window until detection; hold rate meanwhile. */
+                p->st.offset_ns = observed;
+                p->last_sample = now;
+                p->t1_ok = p->t2_ok = 0;
+                return;
+            } else {
+                /* Mute the real port before resetting acquisition or stepping ToD. */
+                if (p->mute) p->mute(p->mute_ctx);
+                p->good_since = 0;
+                p->servo.last_ppb = dclock_freq(p->clk);
+                servo_init(&p->servo);
+                p->st.servo_state = SERVO_UNLOCKED;
+                p->cold_done = 0;
+                dclock_set_locked(p->clk, 0);
+                p->bad_since = 0;
+            }
+        } else p->bad_since = 0;
+    }
+    if (!p->cold_done && p->c.steer && p->clk) {
         p->cold_done = 1;
         if (llabs(ms) > PTP_COLD_STEP_NS) {
-            LOGI("PTP: first Sync %lld ns off, stepping", (long long)ms);
+            if (p->mute) p->mute(p->mute_ctx);
             dclock_step(p->clk, -ms);
-            p->st.offset_ns = (double)ms;
             p->st.servo_state = SERVO_JUMP;
-            p->t1 = p->t2 = 0;
-            p->t3_ok = 0;
+            p->have_delay = 0;
+            p->t1_ok = p->t2_ok = p->t3_ok = 0;
+            return;
         }
     }
     if (p->have_delay) {
         double off = (double)ms - p->delay_ns;
+        if (p->last_sample && now - p->last_sample > 500000000ull) p->good_since = 0;
+        p->last_sample = now;
         p->st.offset_ns = off;
         p->st.samples++;
         if (p->c.steer && p->clk) {
@@ -417,8 +445,11 @@ static void sample(ptp_t *p)
             p->st.servo_state = r;
             if (r == SERVO_JUMP) {
                 LOGI("PTP: offset %.0f ns, stepping", off);
+                if (p->mute) p->mute(p->mute_ctx);
+                p->good_since = 0;
                 dclock_step(p->clk, (int64_t)llround(step));
                 p->have_delay = 0;
+                p->t3_ok = 0; /* a Delay_Resp from before the step cannot measure the new clock */
                 p->t1 = p->t2 = 0;
             } else if (r != SERVO_UNLOCKED || ppb != 0.0) dclock_set_freq(p->clk, ppb);
             dclock_set_locked(p->clk, r == SERVO_LOCKED && fabs(off) < 20000.0);
@@ -513,6 +544,7 @@ ptp_t *ptp_new(net_t *n, dclock_t *clk, const uint8_t mac[6], const ptp_cfg_t *c
     p->parent = -1;
     p->state = PTP_LISTENING;
     p->start = g_now();
+    if (p->clk) p->servo.last_ppb = dclock_freq(p->clk);
     servo_init(&p->servo);
     net_udp_bind(n, PTP1_EVENT, on_event, p);
     net_udp_bind(n, PTP1_GENERAL, on_general, p);
@@ -596,6 +628,7 @@ void ptp_tick(ptp_t *p, uint64_t now)
             p->lost = lost;
             p->t1_ok = p->t2_ok = p->t3_ok = 0;
             p->have_delay = 0;
+            if (p->clk) p->servo.last_ppb = dclock_freq(p->clk);
             servo_init(&p->servo);
             p->good_since = 0;
             dclock_set_locked(p->clk, 0);
@@ -614,7 +647,9 @@ double ptp_ready_ns(int sw_stamps, uint32_t ready_us)
 int ptp_clock_ready(const ptp_t *p)
 {
     if (p->c.role == PTP_ROLE_LEADER || p->c.role == PTP_ROLE_OFF || p->state == PTP_MASTER) return 1;
-    return p->state == PTP_SLAVE && !p->lost && p->good_since && g_now() - p->good_since >= PTP_READY_HOLD_NS;
+    return p->state == PTP_SLAVE && !p->lost && p->good_since && p->last_sample &&
+           g_now() - p->last_sample <= 500000000ull &&
+           p->last_sample - p->good_since >= PTP_READY_HOLD_NS;
 }
 
 const char *ptp_state_name(int s)
@@ -628,3 +663,6 @@ void ptp_get_stats(const ptp_t *p, ptp_stats_t *s)
     *s = p->st;
     s->state = p->state;
 }
+
+void ptp_on_mute(ptp_t *p, void (*fn)(void *), void *ctx)
+{ p->mute = fn; p->mute_ctx = ctx; }

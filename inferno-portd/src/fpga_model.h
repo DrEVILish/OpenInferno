@@ -36,6 +36,7 @@ typedef struct {
     uint32_t rx_stamp_late_ns;   /* RX SFD stamps this late (an io build's input stages) */
     uint32_t tx_wire_late_ns;    /* frames on the in-memory wire this long after their TX SFD stamp */
     int      xbar;            /* XBAR_ID reads OXB1 */
+    uint32_t oiob_info;       /* OIOB_ID reads OIOB, OIOB_INFO this; 0: no OIOB block (io builds up to 35) */
     int      iobuild;         /* FCAP_ID reads OFCP, FCAP_INFO this io build; 0: no aes_fcap */
 } model_cfg_t;
 

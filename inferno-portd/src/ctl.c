@@ -92,6 +92,8 @@ static void status(port_t *p, char *o, size_t sz)
     net_get_stats(p->net, &ns);
     outf(o, sz, "net_rx=%llu\nnet_tx=%llu\nnet_drops=%llu\n", (unsigned long long)ns.rx, (unsigned long long)ns.tx,
          (unsigned long long)ns.drops);
+    if (p->hw->stamp_known) outf(o, sz, "stamp_corr=%+d/%+d\n", (int)p->hw->rx_stamp_ns, (int)p->hw->tx_stamp_ns);
+    else outf(o, sz, "stamp_corr=unknown\n");
     outf(o, sz, "loop_gap_max_us=%llu\n", (unsigned long long)(p->tick_gap_max / 1000));
 }
 

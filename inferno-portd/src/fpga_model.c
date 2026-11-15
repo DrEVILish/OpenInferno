@@ -62,6 +62,9 @@ void model_wire_drop(model_wire_t *w, int (*drop)(const uint8_t *, int)) { w->dr
 typedef struct {
     model_cfg_t c;
     uint64_t last_ns;
+    uint64_t stamp_epoch; /* real PHY: reject interpolation across rate writes or ToD steps */
+    int64_t rt_offset;
+    uint64_t rt_sample;
     double   tick_frac;
     /* ptp_clock */
     uint64_t sec;
@@ -394,6 +397,48 @@ static void phy_input(model_t *m, const uint8_t *p, int len, uint64_t arrive_ns)
     cq_enqueue(m, p, len, arrive_ns);
 }
 
+/* CLOCK_REALTIME stamps are converted only with a contemporaneous monotonic bracket.
+ * Reject broad brackets rather than turn scheduler latency into timestamp precision. */
+static int stamp_convert(uint64_t stamp, uint64_t a, uint64_t rt, uint64_t b,
+                         uint64_t epoch, uint64_t *at)
+{
+    if (b < a || b - a > 1000 || stamp > rt || rt - stamp > 100000000) return 0;
+    uint64_t mid = a + (b - a) / 2, age = rt - stamp;
+    if (age > mid || mid - age < epoch) return 0;
+    *at = mid - age;
+    return 1;
+}
+
+static int rx_stamp(model_t *m, struct msghdr *mh, uint64_t *at)
+{
+    if (mh->msg_flags & (MSG_TRUNC | MSG_CTRUNC)) return 0;
+    struct timespec ts = {0}, a, rt, b;
+    int found = 0;
+    for (struct cmsghdr *c = CMSG_FIRSTHDR(mh); c; c = CMSG_NXTHDR(mh, c)) {
+        if (c->cmsg_len < CMSG_LEN(0) ||
+            c->cmsg_len > (size_t)((char *)mh->msg_control + mh->msg_controllen - (char *)c)) return 0;
+        if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_TIMESTAMPNS) continue;
+        if (found++ || c->cmsg_len != CMSG_LEN(sizeof(ts))) return 0;
+        memcpy(&ts, CMSG_DATA(c), sizeof(ts));
+    }
+    if (!found || ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000) return 0;
+    if (clock_gettime(CLOCK_MONOTONIC, &a) || clock_gettime(CLOCK_REALTIME, &rt) ||
+        clock_gettime(CLOCK_MONOTONIC, &b)) return 0;
+    uint64_t an = (uint64_t)a.tv_sec * 1000000000 + a.tv_nsec;
+    uint64_t bn = (uint64_t)b.tv_sec * 1000000000 + b.tv_nsec;
+    uint64_t rn = (uint64_t)rt.tv_sec * 1000000000 + rt.tv_nsec;
+    if (bn < an || bn - an > 1000) return 0;
+    int64_t offset = (int64_t)(rn - (an + (bn - an) / 2));
+    /* Allow normal realtime frequency discipline (500 ppm), but invalidate queued stamps on steps. */
+    if (m->rt_sample && (bn < m->rt_sample ||
+        llabs(offset - m->rt_offset) > (int64_t)(1000 + (bn - m->rt_sample) / 2000)))
+        m->stamp_epoch = bn;
+    m->rt_sample = bn;
+    m->rt_offset = offset;
+    return stamp_convert((uint64_t)ts.tv_sec * 1000000000 + ts.tv_nsec,
+                         an, rn, bn, m->stamp_epoch, at);
+}
+
 static void phy_poll(model_t *m)
 {
     uint64_t now = g_now_ns();
@@ -428,18 +473,10 @@ static void phy_poll(model_t *m)
             mh.msg_control = cbuf; mh.msg_controllen = sizeof(cbuf);
             ssize_t n = recvmsg(m->c.phy_fd, &mh, MSG_DONTWAIT);
             if (n <= 0) break;
-            if (sll.sll_pkttype == PACKET_OUTGOING) continue;
-            /* the kernel's receive time (SO_TIMESTAMPNS, CLOCK_REALTIME) as our host time: the model's stand-in for
-             * the SFD stamp, not the time this 1 ms poll ran */
-            uint64_t at = now;
-            for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh); c; c = CMSG_NXTHDR(&mh, c))
-                if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_TIMESTAMPNS) {
-                    struct timespec ts, rt;
-                    memcpy(&ts, CMSG_DATA(c), sizeof(ts));
-                    clock_gettime(CLOCK_REALTIME, &rt);
-                    int64_t ago = ((int64_t)rt.tv_sec - ts.tv_sec) * 1000000000LL + (rt.tv_nsec - ts.tv_nsec);
-                    if (ago >= 0 && ago < 100000000LL) at = now - (uint64_t)ago;
-                }
+            if (n > 1514 || mh.msg_namelen < sizeof(sll) ||
+                sll.sll_pkttype == PACKET_OUTGOING) continue;
+            uint64_t at;
+            if (!rx_stamp(m, &mh, &at)) continue;
             phy_input(m, b, (int)n, at);
         } else {
             ssize_t n = recv(m->c.phy_fd, b, sizeof(b), MSG_DONTWAIT);
@@ -651,7 +688,12 @@ static void aoip_wr(model_t *m, uint32_t blk, uint32_t o, uint32_t v)
     case AOIP_SRC_MAC_LO: if (own) m->src_mac_lo = v; break;
     case AOIP_SRC_IP: if (own) m->src_ip = v; break;
     case AOIP_LINK_OFFSET: if (own) m->link_offset = v; break;
-    case AOIP_PTP_INCR: if (ck) m->incr = v; else m->own_incr = v; break;
+    case AOIP_PTP_INCR:
+        if (ck) {
+            if (m->c.phy_packet && m->incr != v) m->stamp_epoch = m->last_ns;
+            m->incr = v;
+        } else m->own_incr = v;
+        break;
     case AOIP_MEDIA_INC: if (ck) m->media_inc = v; else m->own_minc = v; break;
     case AOIP_SET_SEC_HI: m->set_sec_hi = v & 0xFFFF; break;
     case AOIP_SET_SEC_LO: m->set_sec_lo = v; break;
@@ -659,6 +701,7 @@ static void aoip_wr(model_t *m, uint32_t blk, uint32_t o, uint32_t v)
     case AOIP_SET_MEDIA: m->set_media = v; break;
     case AOIP_CLOCK_CMD:
         if (!ck) break;
+        if ((v & 1) && m->c.phy_packet) m->stamp_epoch = m->last_ns;
         if (v & 1) { m->sec = ((uint64_t)m->set_sec_hi << 32) | m->set_sec_lo; m->ns = m->set_ns; m->frac24 = 0; }
         if (v & 2) {
             m->media_pos_unwrapped += (double)(int32_t)(m->set_media - m->media_ts);
@@ -818,7 +861,11 @@ int model_packet_socket(const char *ifname)
     mr.mr_type = PACKET_MR_PROMISC;
     setsockopt(fd, SOL_PACKET, PACKET_ADD_MEMBERSHIP, &mr, sizeof(mr));
     int on = 1;
-    setsockopt(fd, SOL_SOCKET, SO_TIMESTAMPNS, &on, sizeof(on));
+    if (setsockopt(fd, SOL_SOCKET, SO_TIMESTAMPNS, &on, sizeof(on)) < 0) {
+        LOGE("model PHY requires SO_TIMESTAMPNS: %d", errno);
+        close(fd);
+        return -1;
+    }
     int rcv = 4 << 20;
     setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcv, sizeof(rcv));
     return fd;

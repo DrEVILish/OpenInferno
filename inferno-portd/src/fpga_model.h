@@ -40,6 +40,7 @@ typedef struct {
     uint32_t tx_wire_late_ns;    /* frames on the in-memory wire this long after their TX SFD stamp */
     int      xbar;            /* XBAR_ID reads OXB1 */
     int64_t (*rx_noise_ns)(const uint8_t *, int); /* test-only timestamp error, NULL in production */
+    uint32_t oiob_info;       /* OIOB_ID reads OIOB, OIOB_INFO this; 0: no OIOB block (io builds up to 35) */
     int      iobuild;         /* FCAP_ID reads OFCP, FCAP_INFO this io build; 0: no aes_fcap */
 } model_cfg_t;
 

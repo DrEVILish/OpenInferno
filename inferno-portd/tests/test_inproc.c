@@ -2,7 +2,7 @@
  * way), in virtual time: the PTPv1 election and the follower's lock (a +50 ppm, 3 s-off oscillator), mDNS discovery,
  * 64 channels subscribed through flow requests (4 flows of 16), the audio checked sample by sample by the models,
  * the reverse direction, renames, a multicast bundle, a latency change, a leader election between two would-be
- * leaders. Part of OpenProSeries inferno-portd. Licence: GPL-3.0-or-later.
+ * leaders, the PI9696 48-channel pattern (6 flows of 8 each way). Part of OpenProSeries inferno-portd. Licence: GPL-3.0-or-later.
  */
 #include "test.h"
 #include "../src/clock.h"
@@ -23,6 +23,7 @@ static uint64_t vnow(void) { return vt; }
 static port_t A, B;
 
 static model_wire_t *W;
+static uint32_t mk_caps;   /* INF_CAPS of the next model; 0 = the full build */
 static hw_t *mk_jb(int side, int id, double ppm, uint64_t tod0, int jb)
 {
     model_cfg_t m;
@@ -30,6 +31,7 @@ static hw_t *mk_jb(int side, int id, double ppm, uint64_t tod0, int jb)
     m.id = id; m.xtal_ppm = ppm; m.maxlat = 3;
     m.port_base = 0x1000; m.clock_base = 0x1000; m.dclk_base = 0xFFFFFFFFu; m.cs2k_base = 0xFFFFFFFFu;
     m.phy_fd = -1; m.wire = W; m.wire_side = side; m.wire_delay_ns = 5000; m.tod_start_ns = tod0; m.jb_frames = jb;
+    m.caps = mk_caps;
     return model_open(&m);
 }
 static hw_t *mk(int side, int id, double ppm, uint64_t tod0) { return mk_jb(side, id, ppm, tod0, 0); }
@@ -212,6 +214,91 @@ static void follower_days_off(void)
            sb.servo_state, (unsigned long long)cb.steps);
 }
 
+/* The PI9696 pattern (Rust inferno, fork rev 5981fee, 48 channels; channels_subscriber.rs): it asks for flows of
+ * min(nchan, 8) channels at fpp min(our fpp max, MTU), one socket per flow, and advertises MAX_CHANNELS_IN_FLOW = 8.
+ * A = our 48-column port (0x10102030: 16 / 16 flows, 32 ch per flow); B stands in for PI9696 with 8 ch per flow
+ * (0x10100830): B's subscriber asks A for 8-channel flows, and A must split its subscription to B into 8s. */
+static int refused(const port_t *p)
+{
+    int n = 0;
+    for (int k = 0; k < MAX_CH; k++) n += sub_status(p, k) == SUB_TOO_MANY || sub_status(p, k) == SUB_TX_FAIL;
+    return n;
+}
+
+static void pi9696_48ch(void)
+{
+    portd_stop(&A); A.hw->ops->close(A.hw);
+    portd_stop(&B); B.hw->ops->close(B.hw);
+    W = model_wire_new();
+    port_defaults(&A);
+    port_defaults(&B);
+    A.n = 0; snprintf(A.desk, sizeof(A.desk), "FOH"); A.mac[5] = 0x51;
+    B.n = 1; snprintf(B.desk, sizeof(B.desk), "PI"); B.mac[5] = 0x62;
+    A.lat_mode = 3; B.lat_mode = 3;
+    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0 };
+    portd_opts_t ob = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0 };
+    mk_caps = 0x10102030u;
+    CHECK(portd_start(&A, mk(0, 1, 0.0, 1760000000ull * 1000000000ull), &oa) == 0);
+    mk_caps = 0x10100830u;
+    CHECK(portd_start(&B, mk(1, 2, 0.0, 1760000000ull * 1000000000ull), &ob) == 0);
+    mk_caps = 0;
+    CHECKF(A.channels == 48 && B.channels == 48 && A.caps_fch == 32 && B.caps_fch == 8, "A %d/%d B %d/%d", A.channels,
+           A.caps_fch, B.channels, B.caps_fch);
+    run(20.0);
+
+    TEST("PI9696 48 ch: B RX 1..48 <- A TX 01..48 as 6 flows of 8 at 32 fpp; A RX 1..48 <- B TX 01..48 as 6 flows of 8");
+    for (int k = 0; k < 48; k++) {
+        char ch[8];
+        snprintf(ch, sizeof(ch), "%02d", k + 1);
+        sub_subscribe(&B, k, ch, "FOH-1");
+        sub_subscribe(&A, k, ch, "PI-2");
+    }
+    int bad = 0;
+    for (int i = 0; i < 100; i++) { run(0.1); bad += refused(&A) + refused(&B); }
+    CHECKF(bad == 0, "%d refused channel-samples", bad);
+    CHECKF(receiving(&B, 0, 48) == 48 && receiving(&A, 0, 48) == 48, "B %d A %d of 48", receiving(&B, 0, 48), receiving(&A, 0, 48));
+    CHECKF(flows(&A, 1) == 6 && flows(&B, 0) == 6, "A TX %d, B RX %d flows", flows(&A, 1), flows(&B, 0));
+    CHECKF(flows(&A, 0) == 6 && flows(&B, 1) == 6, "A RX %d, B TX %d flows", flows(&A, 0), flows(&B, 1));
+    int txok = 0, cover = 0;
+    for (int f = 0; f < NTXF; f++) {
+        const txflow_t *t = &A.tx[f];
+        if (!t->used) continue;
+        int ok = t->programmed && t->nch == 8 && t->fpp == 32 && t->bps == 3 && t->ch[0] % 8 == 0;
+        for (int c = 0; c < 8; c++) { ok &= t->ch[c] == t->ch[0] + c; if (t->ch[c] < 48) cover |= 1u << (t->ch[c] / 8); }
+        txok += ok;
+    }
+    CHECKF(txok == 6 && cover == 0x3F, "%d A TX flows of 8 consecutive channels at fpp 32, blocks %02x", txok, cover);
+    int rxok = 0;
+    for (int f = 0; f < NRXF; f++) rxok += A.rx[f].used && A.rx[f].nch == 8 && A.rx[f].per == 8;
+    CHECKF(rxok == 6, "%d A RX flows of 8", rxok);
+    int ma = 0, mb = 0;
+    for (int k = 0; k < 48; k++) { mb += colsrc_ok(&B, k, 1, k); ma += colsrc_ok(&A, k, 2, k); }
+    CHECKF(mb == 48 && ma == 48, "columns carrying channel n: B %d, A %d of 48", mb, ma);
+    /* Count a settled whole second: 6 flows * 1500 packets, 48 * 48000 samples each way. */
+    model_stats_t before[2], after[2];
+    model_get_stats(A.hw, &before[0]);
+    model_get_stats(B.hw, &before[1]);
+    run(1.0);
+    model_get_stats(A.hw, &after[0]);
+    model_get_stats(B.hw, &after[1]);
+    for (int side = 0; side < 2; side++) {
+        const model_stats_t *b = &before[side], *a = &after[side];
+        CHECKF(a->tx_media - b->tx_media == 9000 && a->rx_media - b->rx_media == 9000,
+               "side %d: TX %llu RX %llu packets (want 9000)", side,
+               (unsigned long long)(a->tx_media - b->tx_media), (unsigned long long)(a->rx_media - b->rx_media));
+        CHECKF(a->pat_ok - b->pat_ok == 48 * 48000 && a->pat_bad == b->pat_bad &&
+               a->rx_bad == b->rx_bad && a->rx_late == b->rx_late && a->rx_early == b->rx_early,
+               "side %d: %llu correct samples (want 2304000), bad/late/early unchanged", side,
+               (unsigned long long)(a->pat_ok - b->pat_ok));
+    }
+    model_stats_t sa, sb;
+    model_get_stats(A.hw, &sa);
+    model_get_stats(B.hw, &sb);
+    CHECKF(sb.pat_ok > 48 * 48000 && sb.pat_bad == 0 && sa.pat_ok > 48 * 48000 && sa.pat_bad == 0,
+           "pattern B ok %llu bad %llu, A ok %llu bad %llu", (unsigned long long)sb.pat_ok, (unsigned long long)sb.pat_bad,
+           (unsigned long long)sa.pat_ok, (unsigned long long)sa.pat_bad);
+}
+
 int main(void)
 {
     g_log_level = getenv("V") ? LOG_DEBUG : LOG_WARN;
@@ -351,5 +438,6 @@ int main(void)
     latency_beyond_buffer();
     xbar_stamps();
     follower_days_off();
+    pi9696_48ch();
     return t_done("test_inproc");
 }

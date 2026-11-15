@@ -152,6 +152,66 @@ static void xbar_stamps(void)
     stamp_case("SFD stamps: io build 30: RX -20 ns: exact", 20, 0, 0, 30, 0.0, 5000.0);
 }
 
+/* desk b32 (2026-11-14): port 6 started as "--ptp follower" with no --owner / --steer followed a Dante leader 34 days
+ * ahead (ptp_offset_ns -2938998389492930, ptp_servo 0) and was never stepped: a measure-only follower by design */
+static const uint64_t TOD_L = 1760000000ull * 1000000000ull, DAYS34 = 2938998389492930ull;
+static int pair(const portd_opts_t *ob)
+{
+    if (A.hw) { portd_stop(&A); A.hw->ops->close(A.hw); }
+    if (B.hw) { portd_stop(&B); B.hw->ops->close(B.hw); }
+    W = model_wire_new();
+    port_defaults(&A);
+    port_defaults(&B);
+    A.n = 0; snprintf(A.desk, sizeof(A.desk), "DANTE"); A.mac[5] = 0x51;
+    B.n = 5; snprintf(B.desk, sizeof(B.desk), "OpenProSeries"); B.mac[5] = 0x06;
+    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0 };
+    CHECK(portd_start(&A, mk(0, 1, 0.0, TOD_L), &oa) == 0);
+    hw_t *h = mk(1, 2, 2.8, TOD_L - DAYS34);
+    if (portd_start(&B, h, ob)) { h->ops->close(h); B.hw = NULL; return -1; }
+    return 0;
+}
+
+static void follower_days_off(void)
+{
+    ptp_stats_t sb;
+    dclock_stats_t cb;
+    TEST("desk b32 line (--ptp follower, no --owner / --steer), leader 34 days ahead: measured, never stepped");
+    portd_opts_t desk = { 0, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 0, -2, 0, 0 };
+    CHECK(pair(&desk) == 0);
+    run(30.0);
+    ptp_get_stats(B.ptp, &sb);
+    dclock_get_stats(B.clk, &cb);
+    CHECKF(sb.state == PTP_SLAVE && sb.offset_ns < -2.9e15 && sb.servo_state == 0 && cb.steps == 0,
+           "%s offset %.0f servo %d steps %llu", ptp_state_name(sb.state), sb.offset_ns, sb.servo_state,
+           (unsigned long long)cb.steps);
+
+    TEST("--steer without --owner is refused (the servo's steps would be dropped: dclock_step needs the owner)");
+    portd_opts_t noown = { 0, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0 };
+    CHECK(pair(&noown) != 0);
+
+    TEST("the fix on the desk (--clock-port 6 --owner --steer), leader 34 days ahead: steps and locks within 10 s");
+    portd_opts_t own = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0 };
+    CHECK(pair(&own) == 0);
+    run(10.0);
+    ptp_get_stats(B.ptp, &sb);
+    dclock_get_stats(B.clk, &cb);
+    CHECKF(sb.state == PTP_SLAVE && fabs(sb.offset_ns) < 1000.0 && cb.steps >= 1 && cb.locked,
+           "offset %.0f ns steps %llu locked %d", sb.offset_ns, (unsigned long long)cb.steps, cb.locked);
+    char out[256] = "";
+    ctl_exec(&B, "ptp follower steer", out, sizeof(out));
+    CHECKF(!strcmp(out, "ok\n"), "owner: ctl \"ptp follower steer\" answered \"%s\"", out);
+
+    TEST("ctl \"ptp follower steer\" on a non-owner is refused, never a silent no-op");
+    CHECK(pair(&desk) == 0);
+    out[0] = 0;
+    ctl_exec(&B, "ptp follower steer", out, sizeof(out));
+    run(10.0);
+    ptp_get_stats(B.ptp, &sb);
+    dclock_get_stats(B.clk, &cb);
+    CHECKF(!strncmp(out, "err", 3) && sb.servo_state == 0 && cb.steps == 0, "reply \"%s\" servo %d steps %llu", out,
+           sb.servo_state, (unsigned long long)cb.steps);
+}
+
 int main(void)
 {
     g_log_level = getenv("V") ? LOG_DEBUG : LOG_WARN;
@@ -290,5 +350,6 @@ int main(void)
     CHECK(colsrc_ok(&A,0,2,0));
     latency_beyond_buffer();
     xbar_stamps();
+    follower_days_off();
     return t_done("test_inproc");
 }

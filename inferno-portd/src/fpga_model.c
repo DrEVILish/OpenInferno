@@ -52,10 +52,12 @@ typedef struct {
 struct model_wire {
     struct { pend_t f[WIRE_N]; int head, n; } q[2];   /* q[s] = frames travelling to side s */
     int cut;
+    int (*drop)(const uint8_t *frame, int len);
 };
 
 model_wire_t *model_wire_new(void) { return calloc(1, sizeof(model_wire_t)); }
 void model_wire_cut(model_wire_t *w, int cut) { w->cut = cut; }
+void model_wire_drop(model_wire_t *w, int (*drop)(const uint8_t *, int)) { w->drop = drop; }
 
 typedef struct {
     model_cfg_t c;
@@ -221,7 +223,7 @@ static void phy_send(model_t *m, const uint8_t *frame, int len)
     if (m->c.wire) {
         int to = !m->c.wire_side;
         typeof(m->c.wire->q[0]) *q = &m->c.wire->q[to];
-        if (q->n >= WIRE_N || m->c.wire->cut) return;
+        if (q->n >= WIRE_N || m->c.wire->cut || (m->c.wire->drop && m->c.wire->drop(frame, len))) return;
         pend_t *f = &q->f[(q->head + q->n) % WIRE_N];
         memcpy(f->d, frame, (size_t)len);
         f->len = len;

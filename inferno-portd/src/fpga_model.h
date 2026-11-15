@@ -16,6 +16,7 @@
 typedef struct model_wire model_wire_t;
 model_wire_t *model_wire_new(void);
 void model_wire_cut(model_wire_t *w, int cut);   /* 1: frames sent are lost, both ways (a pulled cable); 0: joined */
+void model_wire_drop(model_wire_t *w, int (*drop)(const uint8_t *frame, int len));   /* frames it returns 1 for are lost */
 
 typedef struct {
     int      id;              /* 0..15: goes into the test pattern */

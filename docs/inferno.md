@@ -146,7 +146,12 @@ upstream Inferno, and the control-plane plan (§9) is based on upstream's module
   is bad (upstream floors it).
 - **The packet time** T = seconds × fs + sub mod 2³² by a 17-step shift-and-add during the header.
 - **Late / early:** a packet wholly before the playout point is late; one reaching past the buffer is early (NF = 256
-  frames ahead at 48 kHz, 512 at 96 kHz). Both are dropped and counted.
+  frames ahead at 48 kHz, 512 at 96 kHz). Both are dropped and counted. A packet taken whose first frames were
+  already played (its last frame is not behind the playout point) plays those frames as silence: `RX_LATE_PART`
+  counts each accepted flow frame whose tag is committed at or behind the sampled playout point, inclusive
+  (one per flow and frame, independent of channel count). With uniformly mapped flows, multiplying by channels
+  per flow gives silent samples. It is a diagnostic of late writes, not a general silence/underrun counter;
+  unmapped flows and overlapping maps need not correspond to audible loss.
 - **Commit:** samples are staged per packet (two banks of 512) and copied into the jitter buffer only after a good
   FCS, one a clock; in parallel the tag engine marks each frame time {mask of the flows that wrote it, T[15:0]}
   (2 clocks a frame).
@@ -269,6 +274,7 @@ ACE keep their addresses.
 | 0x38 | CAPS | RO | bits 7:0 MAX_CH (64), 15:8 channels per flow (32), 23:16 TX flows (16), 31:24 RX flows (16); `inferno-portd` uses these as its run-time limits |
 | 0x3C | CAPS2 | RO | bits 7:0 MAX_FPP (32), bits 9:8 MAXLAT (the largest latency mode built, 3 = 5 ms), bits 31:16 TX ring frames (128) |
 | 0x40…0x5C | counters | RO | TX_PACKETS, TX_OVERRUNS, RX_OK, RX_BAD, RX_LATE, RX_EARLY, RX_UNDERRUNS, RX_TS_GAPS |
+| 0x60 | RX_LATE_PART | RO | accepted flow frames committed at or behind the sampled playout point; unsigned 32-bit, wraps modulo 2³², synchronous RX reset clears, reads do not clear, writes ignored |
 
 Table words (TBL_ADDR; block RAM, the word at TBL_ADDR is ready one clock after the address changes):
 
@@ -554,7 +560,8 @@ advertised `nchan=16` (option `--nchan`), `fpp=32,2`, `latency_ns` = the port's 
   (`AMU_QEMU`), then `AMU_CHECK` (a static-binary checker script) when set. `-r` only fakes the kernel version (qemu
   still runs the glibc `ppc` build, so it cannot catch this): this is not a real-AMU run. The source must not include
   `<linux/...>` headers (the musl sysroot has none; `check-unit` greps for them).
-- `status` keys include `clock_fail=`, `cs2k_ppm=` and `ptp_leader=` (was `ptp_master=`).
+- `status` keys include `clock_fail=`, `cs2k_ppm=` and `ptp_leader=` (was `ptp_master=`), and `hw_rx_late_part=`
+  (`RX_LATE_PART`, beside `hw_rx_late=` / `hw_rx_early=`).
 
 ## 10. Milestones
 
@@ -594,3 +601,37 @@ advertised `nchan=16` (option `--nchan`), `fpp=32,2`, `latency_ns` = the port's 
     not settable). A load at a programmed time-of-day instant would make it exact (an RTL change).
 13. **PTPv1 Sync interval and the stamps of a Dante leader** (0.25 s here) and Dante's Delay_Req expectations: captures.
 14. **DHCP:** not implemented (link-local or a static address); Dante devices use both.
+
+### RX_LATE_PART validation (INF-01 / INF-04)
+
+The counter increments only on the existing tag commit enable; it does not gate or change audio writes,
+playout, packet acceptance, or RAM contents. The signed 16-bit tag-time difference uses the existing bounded
+jitter-buffer time window, including timestamp rollover. Disabling RX does not clear it. The software model
+counts accepted frames through its instantaneous play point inclusive, without modelling commit clock cycles;
+opening a fresh model starts at zero. Status follows the established counter prefix: `hw_rx_late_part=`.
+
+The capacity bench drains queued switch packets with the media/play point frozen before reading the counter.
+Jitter cases retain the #33 workload without the later invalid-column probe traffic; normal capacity cases
+still exercise probes. The 400 µs case remains an audio-loss XFAIL: 848 silent samples = 106 flow-frames × 8,
+with late=early=0. This diagnostic does not repair the audio loss.
+
+Yosys 0.52, `synth_xilinx -family xc3s`, before = main e0c0460, after = this counter.
+Build28 geometry: RX NF=64, NFLOW=16, MAXFCH=32, MAX_SMP=512; registers NF=64, NR=64,
+MAX_FPP=16, MAXLAT=1, NTXF=NRXF=16. LUT totals sum LUT1…LUT6; FF totals sum FD*;
+distributed RAM and mux/carry cells are separate from LUT totals.
+
+| MAX_CH | Module | LUT before → after (delta) | FF before → after (delta) | RAMB16 before → after |
+|---|---|---|---|---|
+| 48 | inferno_rx | 1499 → 1543 (+44) | 1084 → 1116 (+32) | 11 → 11 |
+| 48 | inferno_regs | 506 → 587 (+81) | 131 → 131 (0) | 0 → 0 |
+| 64 | inferno_rx | 1465 → 1468 (+3) | 1084 → 1116 (+32) | 11 → 11 |
+| 64 | inferno_regs | 488 → 589 (+101) | 131 → 131 (0) | 0 → 0 |
+
+These are standalone module synthesis counts, not full-device placement or timing evidence.
+**FPGA & Port Pool must confirm fit before merge.** No deployment or hardware validation is implied.
+
+Validation logs on the development VM: `/root/q59-logs/latepart-final-{check,e2e,amu}.log`;
+synthesis inputs, eight full logs and machine-readable totals: `/root/q59-logs/latepart-synth/`.
+Disabling the increment in an isolated RTL copy produces RX_LATE_PART=0 against the same 848 silent samples
+(`latepart-red-rtl.log`); disabling model accumulation fails the status and RO/persistence assertions
+(`latepart-red-model.log`). Restored code passes the 102-check unit suite.

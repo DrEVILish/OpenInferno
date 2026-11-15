@@ -53,6 +53,7 @@
 #define INF_RX_EARLY     (INF_BASE + 0x54)
 #define INF_RX_UNDERRUNS (INF_BASE + 0x58)
 #define INF_RX_TS_GAPS   (INF_BASE + 0x5C)
+#define INF_RX_LATE_PART (INF_BASE + 0x60)   /* flow frames taken after their play time (silence) */
 /* software model only (tests): pattern checks of the received audio (fpga_model.c); hardware reads 0 */
 #define INF_MODEL_RXPAT_OK  (INF_BASE + 0xE0)
 #define INF_MODEL_RXPAT_BAD (INF_BASE + 0xE4)
@@ -114,6 +115,10 @@
 /* ---- the io build's identity, at fixed window offsets (PRO1: --mem-base 0xF20C0000; fpga/docs/xc3s5000.md) */
 #define XBAR_ID          0x0160  /* HOST page 0 + 0x160 (iowin C0160): port_xbar, 8.11.21; 0 without XBAR */
 #define XBAR_ID_VALUE    0x4F584231u   /* "OXB1" */
+#define OIOB_ID          0x01A0  /* HOST page 0 + 0x1A0 (iowin C01A0): the io build block, always built; 0 up to b35 */
+#define OIOB_ID_VALUE    0x4F494F42u   /* "OIOB" */
+#define OIOB_INFO        0x01A4  /* {8'd1 version, IOBUILD, PORT_CH, flags}: 31:16 as FCAP_INFO */
+#define OIOB_FLAG_XBAR   0x02u   /* flags: bit0 FCAP, bit1 XBAR, bit2 MDIO, bit3 HP_SRC */
 #define FCAP_ID          0x8900  /* EXT page 8 + 0x900 (iowin C8900): aes_fcap, 8.11.15 */
 #define FCAP_ID_VALUE    0x4F464350u   /* "OFCP" */
 #define FCAP_INFO        0x8904  /* {8'd1 version, IOBUILD, 16'd0} */

@@ -16,6 +16,7 @@
 #include <math.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
 static uint64_t vt = 5000000000ull;
 static uint64_t vnow(void) { return vt; }
@@ -113,8 +114,8 @@ static int colsrc_ok(port_t *p, int k, int want_id, int want_col)
  * stamp; io builds 30 / 31 (LOG M423 / M438): RX +20 / +40 ns against build 29. A measure-only follower at 0 ppm,
  * X ns ahead of the leader, over a 5 us wire: offset X, delay 5000 ns when portd corrects the stamps */
 #define STAMP_X 3123456780ll
-static void stamp_case(const char *what, uint32_t rx_late, uint32_t tx_late, int xbar, int iobuild, double want_off,
-                       double want_delay)
+static void stamp_case(const char *what, uint32_t rx_late, uint32_t tx_late, int xbar, int iobuild, uint32_t oiob,
+                       double want_off, double want_delay, const char *want_corr, const char *want_warn)
 {
     if (A.hw) { portd_stop(&A); A.hw->ops->close(A.hw); }
     if (B.hw) { portd_stop(&B); B.hw->ops->close(B.hw); }
@@ -132,9 +133,28 @@ static void stamp_case(const char *what, uint32_t rx_late, uint32_t tx_late, int
     m.port_base = 0x1000; m.clock_base = 0x1000; m.dclk_base = 0xFFFFFFFFu; m.cs2k_base = 0xFFFFFFFFu;
     m.phy_fd = -1; m.wire = W; m.wire_side = 1; m.wire_delay_ns = 5000;
     m.tod_start_ns = (uint64_t)(1760000000ll * 1000000000ll + STAMP_X);
-    m.rx_stamp_late_ns = rx_late; m.tx_wire_late_ns = tx_late; m.xbar = xbar; m.iobuild = iobuild;
+    m.rx_stamp_late_ns = rx_late; m.tx_wire_late_ns = tx_late; m.xbar = xbar; m.iobuild = iobuild; m.oiob_info = oiob;
+    /* B's start-up warnings, from stderr */
+    char warn[4096] = "";
+    FILE *cap = tmpfile();
+    int save = dup(2);
+    fflush(stderr);
+    dup2(fileno(cap), 2);
     CHECK(portd_start(&B, model_open(&m), &ob) == 0);
+    fflush(stderr);
+    dup2(save, 2);
+    close(save);
+    rewind(cap);
+    warn[fread(warn, 1, sizeof(warn) - 1, cap)] = 0;
+    fclose(cap);
+    fputs(warn, stderr);
     TEST(what);
+    if (want_warn) CHECKF(strstr(warn, want_warn) != NULL, "no warning \"%s\"", want_warn);
+    if (want_corr) {
+        char out[8192];
+        ctl_exec(&B, "status", out, sizeof(out));
+        CHECKF(strstr(out, want_corr) != NULL, "no \"%s\" in status", want_corr);
+    }
     run(12.0);
     ptp_stats_t s;
     ptp_get_stats(B.ptp, &s);
@@ -145,13 +165,27 @@ static void stamp_case(const char *what, uint32_t rx_late, uint32_t tx_late, int
 
 static void xbar_stamps(void)
 {
-    stamp_case("SFD stamps: no offsets (io build 29): offset and delay exact", 0, 0, 0, 29, 0.0, 5000.0);
+    stamp_case("SFD stamps: no offsets (io build 29): offset and delay exact", 0, 0, 0, 29, 0, 0.0, 5000.0, NULL, NULL);
     stamp_case("SFD stamps: XBAR + io build 32 pipeline, its IDs hidden: off by (80 - 20) / 2, delay + (80 + 20) / 2", 80, 20,
-               0, 0, 30.0, 5050.0);
+               0, 0, 0, 30.0, 5050.0, NULL, NULL);
     stamp_case("SFD stamps: io build 32 + XBAR (OXB1 at C0160, OFCP build 32 at C8900): RX -80, TX +20 ns: exact", 80, 20, 1,
-               32, 0.0, 5000.0);
-    stamp_case("SFD stamps: io build 32, no XBAR: RX -40 ns: exact", 40, 0, 0, 32, 0.0, 5000.0);
-    stamp_case("SFD stamps: io build 30: RX -20 ns: exact", 20, 0, 0, 30, 0.0, 5000.0);
+               32, 0, 0.0, 5000.0, NULL, NULL);
+    stamp_case("SFD stamps: io build 30: RX -20 ns: exact", 20, 0, 0, 30, 0, 0.0, 5000.0, NULL, NULL);
+    /* OIOB (C01A0, INFO {1, IOBUILD, PORT_CH, flags}): the combined image without aes_fcap */
+    stamp_case("SFD stamps: OIOB io build 36 + XBAR, no OFCP (INFO 0x0124300E): RX -80, TX +20 ns: exact", 80, 20, 1, 0,
+               0x0124300Eu, 0.0, 5000.0, "stamp_corr=-80/+20\n", NULL);
+    stamp_case("SFD stamps: OFCP only (io build 32, no OIOB, no XBAR): RX -40, TX 0: exact", 40, 0, 0, 32, 0, 0.0, 5000.0,
+               "stamp_corr=-40/+0\n", NULL);
+    stamp_case("SFD stamps: no OIOB, no OFCP (b32 pipeline): warns, stamp_corr unknown, no correction: off by 20 / 2, delay + 20",
+               40, 0, 0, 0, 0, 20.0, 5020.0, "stamp_corr=unknown\n", "io build unknown");
+    stamp_case("SFD stamps: OIOB says XBAR (0x0124300E), no OXB1: warns, corrects as OXB1: RX -40 ns: exact", 40, 0, 0, 0,
+               0x0124300Eu, 0.0, 5000.0, "stamp_corr=-40/+0\n", "OXB1");
+    stamp_case("SFD stamps: OIOB b30 overrides disagreeing OFCP b32", 20, 0, 0, 32,
+               0x011E300Cu, 0.0, 5000.0, "stamp_corr=-20/+0\n", NULL);
+    stamp_case("SFD stamps: unknown build still applies OXB1 correction", 40, 20, 1, 0,
+               0, 0.0, 5000.0, "stamp_corr=unknown\n", "io build unknown");
+    stamp_case("SFD stamps: OIOB no XBAR but OXB1 present", 80, 20, 1, 0,
+               0x0124300Cu, 0.0, 5000.0, "stamp_corr=-80/+20\n", "OIOB XBAR flag 0 but OXB1");
 }
 
 /* desk b32 (2026-11-14): port 6 started as "--ptp follower" with no --owner / --steer followed a Dante leader 34 days

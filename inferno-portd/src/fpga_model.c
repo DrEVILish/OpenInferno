@@ -75,7 +75,7 @@ typedef struct {
     /* inferno_regs */
     uint32_t inf_ctrl, tbl_addr, tx_tbl[256], rx_tbl[256], rx_st[256];
     uint32_t media_fs, set_msec, set_msub, latency;
-    uint32_t tx_packets, tx_overruns, rx_ok, rx_bad, rx_late, rx_early, rx_underruns, rx_gaps;
+    uint32_t tx_packets, tx_overruns, rx_ok, rx_bad, rx_late, rx_early, rx_underruns, rx_gaps, rx_late_part;
     struct { int run; uint32_t next_t; int fpp; } txf[NTXF];
     uint16_t ipid;
     uint32_t colsrc[MAX_CH];
@@ -343,6 +343,7 @@ static int rx_claim(model_t *m, const uint8_t *p, int len)
         if ((int32_t)(play - (t + (uint32_t)frames - 1)) > 0) { m->rx_late++; return 1; }
         if ((int32_t)((t + (uint32_t)frames) - (play + (uint32_t)nf)) > 0) { m->rx_early++; return 1; }
         m->rx_ok++;
+        if ((int32_t)(play - t) >= 0) m->rx_late_part += play - t + 1; /* synchronous model: through play inclusive */
         m->st_rxmedia++;
         uint32_t *st = &m->rx_st[16 * f];
         st[0] = get32(ip + 12);
@@ -508,6 +509,7 @@ static uint32_t inf_rd(model_t *m, uint32_t o)
     case INF_RX_EARLY: return m->rx_early;
     case INF_RX_UNDERRUNS: return m->rx_underruns;
     case INF_RX_TS_GAPS: return m->rx_gaps;
+    case INF_RX_LATE_PART: return m->rx_late_part;
     case INF_MODEL_RXPAT_OK: return (uint32_t)m->pat_ok;
     case INF_MODEL_RXPAT_BAD: return (uint32_t)m->pat_bad;
     case INF_MODEL_COLSRC: return m->colsrc[m->colsrc_sel & 63];
@@ -704,6 +706,8 @@ static uint32_t m_rd(hw_t *h, uint32_t a)
         if (a - m->c.cs2k_base == CS2K_ECHO) return m->cs_echo;
         if (a - m->c.cs2k_base == CS2K_CMD) return m->cs_cmd;
     }
+    if (a == OIOB_ID) return m->c.oiob_info ? OIOB_ID_VALUE : 0;
+    if (a == OIOB_INFO) return m->c.oiob_info;
     if (a == XBAR_ID) return m->c.xbar ? XBAR_ID_VALUE : 0;
     if (a == FCAP_ID) return m->c.iobuild ? FCAP_ID_VALUE : 0;
     if (a == FCAP_INFO) return m->c.iobuild ? 0x01000000u | ((uint32_t)m->c.iobuild << 16) : 0;

@@ -84,14 +84,17 @@ static void status(port_t *p, char *o, size_t sz)
             rcv += p->sub[k].status == SUB_RX_UNICAST || p->sub[k].status == SUB_RX_MULTICAST;
         }
     outf(o, sz, "subs=%d\nsubs_receiving=%d\n", subs, rcv);
-    outf(o, sz, "hw_tx_packets=%u\nhw_rx_ok=%u\nhw_rx_late=%u\nhw_rx_early=%u\nhw_rx_bad=%u\n", port_rd(p->hw, INF_TX_PACKETS),
-         port_rd(p->hw, INF_RX_OK), port_rd(p->hw, INF_RX_LATE), port_rd(p->hw, INF_RX_EARLY), port_rd(p->hw, INF_RX_BAD));
+    outf(o, sz, "hw_tx_packets=%u\nhw_rx_ok=%u\nhw_rx_late=%u\nhw_rx_early=%u\nhw_rx_bad=%u\nhw_rx_late_part=%u\n",
+         port_rd(p->hw, INF_TX_PACKETS), port_rd(p->hw, INF_RX_OK), port_rd(p->hw, INF_RX_LATE), port_rd(p->hw, INF_RX_EARLY),
+         port_rd(p->hw, INF_RX_BAD), port_rd(p->hw, INF_RX_LATE_PART));
     uint32_t pok = port_rd(p->hw, INF_MODEL_RXPAT_OK), pbad = port_rd(p->hw, INF_MODEL_RXPAT_BAD);
     if (pok || pbad) outf(o, sz, "model_pattern_ok=%u\nmodel_pattern_bad=%u\n", pok, pbad);
     net_stats_t ns;
     net_get_stats(p->net, &ns);
     outf(o, sz, "net_rx=%llu\nnet_tx=%llu\nnet_drops=%llu\n", (unsigned long long)ns.rx, (unsigned long long)ns.tx,
          (unsigned long long)ns.drops);
+    if (p->hw->stamp_known) outf(o, sz, "stamp_corr=%+d/%+d\n", (int)p->hw->rx_stamp_ns, (int)p->hw->tx_stamp_ns);
+    else outf(o, sz, "stamp_corr=unknown\n");
     outf(o, sz, "loop_gap_max_us=%llu\n", (unsigned long long)(p->tick_gap_max / 1000));
 }
 

@@ -702,6 +702,8 @@ static uint32_t m_rd(hw_t *h, uint32_t a)
         if (a - m->c.cs2k_base == CS2K_ECHO) return m->cs_echo;
         if (a - m->c.cs2k_base == CS2K_CMD) return m->cs_cmd;
     }
+    if (a == OIOB_ID) return m->c.oiob_info ? OIOB_ID_VALUE : 0;
+    if (a == OIOB_INFO) return m->c.oiob_info;
     if (a == XBAR_ID) return m->c.xbar ? XBAR_ID_VALUE : 0;
     if (a == FCAP_ID) return m->c.iobuild ? FCAP_ID_VALUE : 0;
     if (a == FCAP_INFO) return m->c.iobuild ? 0x01000000u | ((uint32_t)m->c.iobuild << 16) : 0;

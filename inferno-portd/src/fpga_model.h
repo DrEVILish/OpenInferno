@@ -33,6 +33,10 @@ typedef struct {
     uint64_t tod_start_ns;    /* the time of day at power-up (the RTL starts at 0) */
     int      jb_frames;       /* NF: jitter-buffer frames at 48 kHz (2 NF at 96 kHz); 0: 256, the full build */
     uint32_t caps;            /* INF_CAPS to report (tests of smaller builds); 0: the full build */
+    uint32_t rx_stamp_late_ns;   /* RX SFD stamps this late (an io build's input stages) */
+    uint32_t tx_wire_late_ns;    /* frames on the in-memory wire this long after their TX SFD stamp */
+    int      xbar;            /* XBAR_ID reads OXB1 */
+    int      iobuild;         /* FCAP_ID reads OFCP, FCAP_INFO this io build; 0: no aes_fcap */
 } model_cfg_t;
 
 hw_t *model_open(const model_cfg_t *cfg);

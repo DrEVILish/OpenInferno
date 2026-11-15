@@ -24,6 +24,7 @@ struct hw {
     uint32_t clock_base;     /* the port block whose aoip_regs drive the desk clock (port 0's) */
     uint32_t dclk_base;      /* fs_phase.v block; 0xFFFFFFFF = none */
     uint32_t cs2k_base;      /* CS2000 command engine; 0xFFFFFFFF = none */
+    int32_t  rx_stamp_ns, tx_stamp_ns;   /* added to the RX / TX SFD stamps (pktq_init: the io build's pipeline) */
     void    *priv;
 };
 

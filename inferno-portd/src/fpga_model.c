@@ -227,7 +227,7 @@ static void phy_send(model_t *m, const uint8_t *frame, int len)
         pend_t *f = &q->f[(q->head + q->n) % WIRE_N];
         memcpy(f->d, frame, (size_t)len);
         f->len = len;
-        f->arrive_ns = g_now_ns() + m->c.wire_delay_ns;
+        f->arrive_ns = g_now_ns() + m->c.wire_delay_ns + m->c.tx_wire_late_ns;
         q->n++;
         return;
     }
@@ -380,7 +380,7 @@ static void cq_enqueue(model_t *m, const uint8_t *p, int len, uint64_t arrive_ns
     cq_frame_t *f = &m->rxq[(m->rxq_head + m->rxq_n) % CQ_ND];
     memcpy(f->d, p, (size_t)len);
     f->len = len;
-    tod_at(m, arrive_ns, &f->ts_sec, &f->ts_ns);
+    tod_at(m, arrive_ns + m->c.rx_stamp_late_ns, &f->ts_sec, &f->ts_ns);
     m->rxq_n++;
     m->rx_bytes += (len + 3) & ~3;
     m->cq_rx_frames++;
@@ -704,6 +704,9 @@ static uint32_t m_rd(hw_t *h, uint32_t a)
         if (a - m->c.cs2k_base == CS2K_ECHO) return m->cs_echo;
         if (a - m->c.cs2k_base == CS2K_CMD) return m->cs_cmd;
     }
+    if (a == XBAR_ID) return m->c.xbar ? XBAR_ID_VALUE : 0;
+    if (a == FCAP_ID) return m->c.iobuild ? FCAP_ID_VALUE : 0;
+    if (a == FCAP_INFO) return m->c.iobuild ? 0x01000000u | ((uint32_t)m->c.iobuild << 16) : 0;
     return 0;
 }
 

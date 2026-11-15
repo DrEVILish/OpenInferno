@@ -356,8 +356,10 @@ static void test_rx_late_part(void)
     static port_t q;
     port_defaults(&q);
     q.n = 2; snprintf(q.desk, sizeof(q.desk), "LP"); q.cfg_ip = IP4(169, 254, 12, 2);
-    portd_opts_t o = {0}; o.log_sync = -2;
+    portd_opts_t o = {0}; o.log_sync = -2; o.ptp_role = PTP_ROLE_LEADER;
     CHECK(portd_start(&q, model_open(&mc), &o) == 0);
+    port_tick(&q, vnow()); /* the counter fixture needs media enabled by the normal ready gate */
+    CHECK(q.clock_ready && (port_rd(q.hw, INF_CTRL) & 3) == 3);
     uint32_t dip = IP4(239, 1, 2, 3), cfg[3] = { dip, 4321, 0 }, w0 = (3u << 16) | (2u << 8) | 1u;
     tbl_write(q.hw, TBL_RX(15, 1), cfg, 3);
     tbl_write(q.hw, TBL_RX(15, 0), &w0, 1);

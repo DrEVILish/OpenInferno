@@ -40,6 +40,7 @@ $(foreach c,$(CAP_XFAIL),$(B)/tb_infcap_$(c).log): $(B)/%.log: $(B)/%.vvp
 	@cat $@
 	@if grep -q '^PASS' $@; then echo "XPASS $*: expected to fail; move it to CAP"; exit 1; fi
 	@grep -q 'samples lost [1-9]' $@ || { echo "FAIL $*: failed, but not by losing samples"; exit 1; }
+	@grep -q 'rx_late_part [1-9][0-9]* matches' $@ || { echo "FAIL $*: RX_LATE_PART does not show the lost samples"; exit 1; }
 	@echo "XFAIL $*: $$(grep -o 'dropped late .*' $@)"
 EXTRA_BENCHES := tb_inferno_staging tb_inferno_short_after_long tb_inferno_pace tb_inferno_lengths tb_rmii tb_ptp tb_ptp_servo tb_fs_phase
 $(addprefix $(B)/,$(addsuffix .vvp,$(EXTRA_BENCHES))): $(B)/%.vvp: tb/%.v $(wildcard rtl/*) | $(B)

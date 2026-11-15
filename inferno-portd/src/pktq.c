@@ -35,9 +35,17 @@ int pktq_init(hw_t *h)
     if (id != CQ_ID_VALUE) { LOGE("cpu_pktq: ID 0x%08x, not OCQ1", id); return -1; }
     port_wr(h, CQ_CTRL, CQ_CTRL_RUN | 0x100);   /* flush, then run */
     port_wr(h, CQ_CTRL, CQ_CTRL_RUN);
-    /* no aes_fcap (OFCP): the build is unknown, taken as before b30 */
-    int build = hw_rd(h, FCAP_ID) == FCAP_ID_VALUE ? (int)((hw_rd(h, FCAP_INFO) >> 16) & 0xFF) : 0;
+    /* the io build: OIOB's INFO, else aes_fcap's (both 23:16); neither: unknown, no build correction */
+    uint32_t info = 0;
+    int oiob = hw_rd(h, OIOB_ID) == OIOB_ID_VALUE;
+    if (oiob) info = hw_rd(h, OIOB_INFO);
+    h->stamp_known = oiob || hw_rd(h, FCAP_ID) == FCAP_ID_VALUE;
+    if (!oiob && h->stamp_known) info = hw_rd(h, FCAP_INFO);
+    int build = (int)((info >> 16) & 0xFF);
+    if (!h->stamp_known) LOGW("io build unknown (no OIOB at C01A0, no OFCP at C8900): stamp correction unknown; no build correction; OXB1 correction still applied if detected");
     int xbar = hw_rd(h, XBAR_ID) == XBAR_ID_VALUE;
+    if (oiob && !!(info & OIOB_FLAG_XBAR) != xbar)
+        LOGW("io build %d: OIOB XBAR flag %d but OXB1 at C0160 %d: correcting as OXB1", build, !!(info & OIOB_FLAG_XBAR), xbar);
     h->rx_stamp_ns = -(io_rx_late_ns(build) + (xbar ? XBAR_RX_LATE_NS : 0));
     h->tx_stamp_ns = xbar ? XBAR_TX_LATE_NS : 0;
     if (h->rx_stamp_ns || h->tx_stamp_ns)

@@ -2,7 +2,7 @@
  * way), in virtual time: the PTPv1 election and the follower's lock (a +50 ppm, 3 s-off oscillator), mDNS discovery,
  * 64 channels subscribed through flow requests (4 flows of 16), the audio checked sample by sample by the models,
  * the reverse direction, renames, a multicast bundle, a latency change, a leader election between two would-be
- * leaders. Part of OpenProSeries inferno-portd. Licence: GPL-3.0-or-later.
+ * leaders, the PI9696 48-channel pattern (6 flows of 8 each way). Part of OpenProSeries inferno-portd. Licence: GPL-3.0-or-later.
  */
 #include "test.h"
 #include "../src/clock.h"
@@ -16,6 +16,7 @@
 #include <math.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
 static uint64_t vt = 5000000000ull;
 static uint64_t vnow(void) { return vt; }
@@ -23,6 +24,7 @@ static uint64_t vnow(void) { return vt; }
 static port_t A, B;
 
 static model_wire_t *W;
+static uint32_t mk_caps;   /* INF_CAPS of the next model; 0 = the full build */
 static hw_t *mk_jb(int side, int id, double ppm, uint64_t tod0, int jb)
 {
     model_cfg_t m;
@@ -30,6 +32,7 @@ static hw_t *mk_jb(int side, int id, double ppm, uint64_t tod0, int jb)
     m.id = id; m.xtal_ppm = ppm; m.maxlat = 3;
     m.port_base = 0x1000; m.clock_base = 0x1000; m.dclk_base = 0xFFFFFFFFu; m.cs2k_base = 0xFFFFFFFFu;
     m.phy_fd = -1; m.wire = W; m.wire_side = side; m.wire_delay_ns = 5000; m.tod_start_ns = tod0; m.jb_frames = jb;
+    m.caps = mk_caps;
     return model_open(&m);
 }
 static hw_t *mk(int side, int id, double ppm, uint64_t tod0) { return mk_jb(side, id, ppm, tod0, 0); }
@@ -111,8 +114,8 @@ static int colsrc_ok(port_t *p, int k, int want_id, int want_col)
  * stamp; io builds 30 / 31 (LOG M423 / M438): RX +20 / +40 ns against build 29. A measure-only follower at 0 ppm,
  * X ns ahead of the leader, over a 5 us wire: offset X, delay 5000 ns when portd corrects the stamps */
 #define STAMP_X 3123456780ll
-static void stamp_case(const char *what, uint32_t rx_late, uint32_t tx_late, int xbar, int iobuild, double want_off,
-                       double want_delay)
+static void stamp_case(const char *what, uint32_t rx_late, uint32_t tx_late, int xbar, int iobuild, uint32_t oiob,
+                       double want_off, double want_delay, const char *want_corr, const char *want_warn)
 {
     if (A.hw) { portd_stop(&A); A.hw->ops->close(A.hw); }
     if (B.hw) { portd_stop(&B); B.hw->ops->close(B.hw); }
@@ -130,9 +133,28 @@ static void stamp_case(const char *what, uint32_t rx_late, uint32_t tx_late, int
     m.port_base = 0x1000; m.clock_base = 0x1000; m.dclk_base = 0xFFFFFFFFu; m.cs2k_base = 0xFFFFFFFFu;
     m.phy_fd = -1; m.wire = W; m.wire_side = 1; m.wire_delay_ns = 5000;
     m.tod_start_ns = (uint64_t)(1760000000ll * 1000000000ll + STAMP_X);
-    m.rx_stamp_late_ns = rx_late; m.tx_wire_late_ns = tx_late; m.xbar = xbar; m.iobuild = iobuild;
+    m.rx_stamp_late_ns = rx_late; m.tx_wire_late_ns = tx_late; m.xbar = xbar; m.iobuild = iobuild; m.oiob_info = oiob;
+    /* B's start-up warnings, from stderr */
+    char warn[4096] = "";
+    FILE *cap = tmpfile();
+    int save = dup(2);
+    fflush(stderr);
+    dup2(fileno(cap), 2);
     CHECK(portd_start(&B, model_open(&m), &ob) == 0);
+    fflush(stderr);
+    dup2(save, 2);
+    close(save);
+    rewind(cap);
+    warn[fread(warn, 1, sizeof(warn) - 1, cap)] = 0;
+    fclose(cap);
+    fputs(warn, stderr);
     TEST(what);
+    if (want_warn) CHECKF(strstr(warn, want_warn) != NULL, "no warning \"%s\"", want_warn);
+    if (want_corr) {
+        char out[8192];
+        ctl_exec(&B, "status", out, sizeof(out));
+        CHECKF(strstr(out, want_corr) != NULL, "no \"%s\" in status", want_corr);
+    }
     run(12.0);
     ptp_stats_t s;
     ptp_get_stats(B.ptp, &s);
@@ -143,13 +165,27 @@ static void stamp_case(const char *what, uint32_t rx_late, uint32_t tx_late, int
 
 static void xbar_stamps(void)
 {
-    stamp_case("SFD stamps: no offsets (io build 29): offset and delay exact", 0, 0, 0, 29, 0.0, 5000.0);
+    stamp_case("SFD stamps: no offsets (io build 29): offset and delay exact", 0, 0, 0, 29, 0, 0.0, 5000.0, NULL, NULL);
     stamp_case("SFD stamps: XBAR + io build 32 pipeline, its IDs hidden: off by (80 - 20) / 2, delay + (80 + 20) / 2", 80, 20,
-               0, 0, 30.0, 5050.0);
+               0, 0, 0, 30.0, 5050.0, NULL, NULL);
     stamp_case("SFD stamps: io build 32 + XBAR (OXB1 at C0160, OFCP build 32 at C8900): RX -80, TX +20 ns: exact", 80, 20, 1,
-               32, 0.0, 5000.0);
-    stamp_case("SFD stamps: io build 32, no XBAR: RX -40 ns: exact", 40, 0, 0, 32, 0.0, 5000.0);
-    stamp_case("SFD stamps: io build 30: RX -20 ns: exact", 20, 0, 0, 30, 0.0, 5000.0);
+               32, 0, 0.0, 5000.0, NULL, NULL);
+    stamp_case("SFD stamps: io build 30: RX -20 ns: exact", 20, 0, 0, 30, 0, 0.0, 5000.0, NULL, NULL);
+    /* OIOB (C01A0, INFO {1, IOBUILD, PORT_CH, flags}): the combined image without aes_fcap */
+    stamp_case("SFD stamps: OIOB io build 36 + XBAR, no OFCP (INFO 0x0124300E): RX -80, TX +20 ns: exact", 80, 20, 1, 0,
+               0x0124300Eu, 0.0, 5000.0, "stamp_corr=-80/+20\n", NULL);
+    stamp_case("SFD stamps: OFCP only (io build 32, no OIOB, no XBAR): RX -40, TX 0: exact", 40, 0, 0, 32, 0, 0.0, 5000.0,
+               "stamp_corr=-40/+0\n", NULL);
+    stamp_case("SFD stamps: no OIOB, no OFCP (b32 pipeline): warns, stamp_corr unknown, no correction: off by 20 / 2, delay + 20",
+               40, 0, 0, 0, 0, 20.0, 5020.0, "stamp_corr=unknown\n", "io build unknown");
+    stamp_case("SFD stamps: OIOB says XBAR (0x0124300E), no OXB1: warns, corrects as OXB1: RX -40 ns: exact", 40, 0, 0, 0,
+               0x0124300Eu, 0.0, 5000.0, "stamp_corr=-40/+0\n", "OXB1");
+    stamp_case("SFD stamps: OIOB b30 overrides disagreeing OFCP b32", 20, 0, 0, 32,
+               0x011E300Cu, 0.0, 5000.0, "stamp_corr=-20/+0\n", NULL);
+    stamp_case("SFD stamps: unknown build still applies OXB1 correction", 40, 20, 1, 0,
+               0, 0.0, 5000.0, "stamp_corr=unknown\n", "io build unknown");
+    stamp_case("SFD stamps: OIOB no XBAR but OXB1 present", 80, 20, 1, 0,
+               0x0124300Cu, 0.0, 5000.0, "stamp_corr=-80/+20\n", "OIOB XBAR flag 0 but OXB1");
 }
 
 /* desk b32 (2026-11-14): port 6 started as "--ptp follower" with no --owner / --steer followed a Dante leader 34 days
@@ -306,6 +342,90 @@ static void mute_until_ready(void)
     run(5.0);
     CHECKF(enables(&B) == 0 && ready_field(&B) == 0, "B enables %d clock_ready %d", enables(&B), ready_field(&B));
 }
+/* The PI9696 pattern (Rust inferno, fork rev 5981fee, 48 channels; channels_subscriber.rs): it asks for flows of
+ * min(nchan, 8) channels at fpp min(our fpp max, MTU), one socket per flow, and advertises MAX_CHANNELS_IN_FLOW = 8.
+ * A = our 48-column port (0x10102030: 16 / 16 flows, 32 ch per flow); B stands in for PI9696 with 8 ch per flow
+ * (0x10100830): B's subscriber asks A for 8-channel flows, and A must split its subscription to B into 8s. */
+static int refused(const port_t *p)
+{
+    int n = 0;
+    for (int k = 0; k < MAX_CH; k++) n += sub_status(p, k) == SUB_TOO_MANY || sub_status(p, k) == SUB_TX_FAIL;
+    return n;
+}
+
+static void pi9696_48ch(void)
+{
+    portd_stop(&A); A.hw->ops->close(A.hw);
+    portd_stop(&B); B.hw->ops->close(B.hw);
+    W = model_wire_new();
+    port_defaults(&A);
+    port_defaults(&B);
+    A.n = 0; snprintf(A.desk, sizeof(A.desk), "FOH"); A.mac[5] = 0x51;
+    B.n = 1; snprintf(B.desk, sizeof(B.desk), "PI"); B.mac[5] = 0x62;
+    A.lat_mode = 3; B.lat_mode = 3;
+    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0, 0 };
+    portd_opts_t ob = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0, 0 };
+    mk_caps = 0x10102030u;
+    CHECK(portd_start(&A, mk(0, 1, 0.0, 1760000000ull * 1000000000ull), &oa) == 0);
+    mk_caps = 0x10100830u;
+    CHECK(portd_start(&B, mk(1, 2, 0.0, 1760000000ull * 1000000000ull), &ob) == 0);
+    mk_caps = 0;
+    CHECKF(A.channels == 48 && B.channels == 48 && A.caps_fch == 32 && B.caps_fch == 8, "A %d/%d B %d/%d", A.channels,
+           A.caps_fch, B.channels, B.caps_fch);
+    run(20.0);
+
+    TEST("PI9696 48 ch: B RX 1..48 <- A TX 01..48 as 6 flows of 8 at 32 fpp; A RX 1..48 <- B TX 01..48 as 6 flows of 8");
+    for (int k = 0; k < 48; k++) {
+        char ch[8];
+        snprintf(ch, sizeof(ch), "%02d", k + 1);
+        sub_subscribe(&B, k, ch, "FOH-1");
+        sub_subscribe(&A, k, ch, "PI-2");
+    }
+    int bad = 0;
+    for (int i = 0; i < 100; i++) { run(0.1); bad += refused(&A) + refused(&B); }
+    CHECKF(bad == 0, "%d refused channel-samples", bad);
+    CHECKF(receiving(&B, 0, 48) == 48 && receiving(&A, 0, 48) == 48, "B %d A %d of 48", receiving(&B, 0, 48), receiving(&A, 0, 48));
+    CHECKF(flows(&A, 1) == 6 && flows(&B, 0) == 6, "A TX %d, B RX %d flows", flows(&A, 1), flows(&B, 0));
+    CHECKF(flows(&A, 0) == 6 && flows(&B, 1) == 6, "A RX %d, B TX %d flows", flows(&A, 0), flows(&B, 1));
+    int txok = 0, cover = 0;
+    for (int f = 0; f < NTXF; f++) {
+        const txflow_t *t = &A.tx[f];
+        if (!t->used) continue;
+        int ok = t->programmed && t->nch == 8 && t->fpp == 32 && t->bps == 3 && t->ch[0] % 8 == 0;
+        for (int c = 0; c < 8; c++) { ok &= t->ch[c] == t->ch[0] + c; if (t->ch[c] < 48) cover |= 1u << (t->ch[c] / 8); }
+        txok += ok;
+    }
+    CHECKF(txok == 6 && cover == 0x3F, "%d A TX flows of 8 consecutive channels at fpp 32, blocks %02x", txok, cover);
+    int rxok = 0;
+    for (int f = 0; f < NRXF; f++) rxok += A.rx[f].used && A.rx[f].nch == 8 && A.rx[f].per == 8;
+    CHECKF(rxok == 6, "%d A RX flows of 8", rxok);
+    int ma = 0, mb = 0;
+    for (int k = 0; k < 48; k++) { mb += colsrc_ok(&B, k, 1, k); ma += colsrc_ok(&A, k, 2, k); }
+    CHECKF(mb == 48 && ma == 48, "columns carrying channel n: B %d, A %d of 48", mb, ma);
+    /* Count a settled whole second: 6 flows * 1500 packets, 48 * 48000 samples each way. */
+    model_stats_t before[2], after[2];
+    model_get_stats(A.hw, &before[0]);
+    model_get_stats(B.hw, &before[1]);
+    run(1.0);
+    model_get_stats(A.hw, &after[0]);
+    model_get_stats(B.hw, &after[1]);
+    for (int side = 0; side < 2; side++) {
+        const model_stats_t *b = &before[side], *a = &after[side];
+        CHECKF(a->tx_media - b->tx_media == 9000 && a->rx_media - b->rx_media == 9000,
+               "side %d: TX %llu RX %llu packets (want 9000)", side,
+               (unsigned long long)(a->tx_media - b->tx_media), (unsigned long long)(a->rx_media - b->rx_media));
+        CHECKF(a->pat_ok - b->pat_ok == 48 * 48000 && a->pat_bad == b->pat_bad &&
+               a->rx_bad == b->rx_bad && a->rx_late == b->rx_late && a->rx_early == b->rx_early,
+               "side %d: %llu correct samples (want 2304000), bad/late/early unchanged", side,
+               (unsigned long long)(a->pat_ok - b->pat_ok));
+    }
+    model_stats_t sa, sb;
+    model_get_stats(A.hw, &sa);
+    model_get_stats(B.hw, &sb);
+    CHECKF(sb.pat_ok > 48 * 48000 && sb.pat_bad == 0 && sa.pat_ok > 48 * 48000 && sa.pat_bad == 0,
+           "pattern B ok %llu bad %llu, A ok %llu bad %llu", (unsigned long long)sb.pat_ok, (unsigned long long)sb.pat_bad,
+           (unsigned long long)sa.pat_ok, (unsigned long long)sa.pat_bad);
+}
 
 int main(void)
 {
@@ -447,5 +567,6 @@ int main(void)
     mute_until_ready();
     xbar_stamps();
     follower_days_off();
+    pi9696_48ch();
     return t_done("test_inproc");
 }

@@ -38,6 +38,16 @@ class CliEdges(unittest.TestCase):
                 self.assertEqual(result.returncode, 2)
                 self.assertNotIn(b"/dev/mem", result.stderr)
 
+    def test_steer_needs_owner(self):
+        # desk b32: --steer without --owner ran the servo but every step was dropped (only the owner writes the clock)
+        try:
+            result = subprocess.run([BIN, "--backend", "model", "-q", "--ptp", "follower", "--steer"],
+                                    capture_output=True, timeout=1)
+        except subprocess.TimeoutExpired:
+            self.fail("--steer without --owner started the daemon")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b"--steer needs --owner", result.stderr)
+
     def test_accept_prefix_boundaries(self):
         for prefix in (0, 32):
             with self.subTest(prefix=prefix):

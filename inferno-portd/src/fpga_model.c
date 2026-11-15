@@ -69,6 +69,7 @@ void model_wire_delay(model_wire_t *w, uint64_t (*fn)(const uint8_t *, int)) { w
 typedef struct {
     model_cfg_t c;
     uint64_t last_ns;
+    uint32_t stamp_incr; /* epoch anchor: adjacent sigma-delta values share an epoch */
     uint64_t stamp_epoch; /* real PHY: reject interpolation across rate writes or ToD steps */
     int64_t rt_offset;
     uint64_t rt_sample;
@@ -778,7 +779,10 @@ static void aoip_wr(model_t *m, uint32_t blk, uint32_t o, uint32_t v)
     case AOIP_LINK_OFFSET: if (own) m->link_offset = v; break;
     case AOIP_PTP_INCR:
         if (ck) {
-            if (m->c.phy_packet && m->incr != v) m->stamp_epoch = m->last_ns;
+            if (m->c.phy_packet && (v < m->stamp_incr || (uint64_t)v > (uint64_t)m->stamp_incr + 1)) {
+                m->stamp_epoch = m->last_ns;
+                m->stamp_incr = v;
+            }
             m->incr = v;
         } else m->own_incr = v;
         break;

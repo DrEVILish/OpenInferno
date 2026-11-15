@@ -60,7 +60,11 @@ int main(void)
     mh.msg_controllen = 0; CHECK(!rx_stamp(&m, &mh, &at));
     mh.msg_controllen = sizeof(control.buf);
     m.c.phy_packet = 1; m.c.clock_base = 0; m.last_ns = mono;
+    m.stamp_incr = 0x14000000;
+    uint64_t epoch = m.stamp_epoch;
     aoip_wr(&m, 0, AOIP_PTP_INCR, 0x14000001);
+    CHECK(m.stamp_epoch == epoch); /* dither cannot starve queued timestamps */
+    aoip_wr(&m, 0, AOIP_PTP_INCR, 0x14000002);
     CHECK(m.stamp_epoch == mono);
     CHECK(!rx_stamp(&m, &mh, &at));
     m.last_ns += 1000;

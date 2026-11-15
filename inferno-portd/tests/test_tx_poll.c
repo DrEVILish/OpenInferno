@@ -45,7 +45,7 @@ static ssize_t receiver(int fd, struct msghdr *mh, int flags) {
 #undef clock_gettime
 int main(void) {
  g_now_ns=now;
- model_t m={0}; m.c.phy_fd=42; m.c.phy_packet=1; m.incr=0x14000000;
+ model_t m={0}; m.c.phy_fd=42; m.c.phy_packet=1; m.incr=m.stamp_incr=0x14000000;
  m.cq_ctrl=1; m.txw_n=15;
  cq_wr(&m,CQ_TX_SEND,60|0x8000|(7<<16));
  CHECK(!m.ts_valid); CHECK(m.tx_id==1);
@@ -53,11 +53,16 @@ int main(void) {
  CHECK(m.tx_id==2);
  tx_poll(&m); CHECK(m.ts_valid && m.ts_tag==8); CHECK(m.ts_ns==999990000);
  m.ts_valid=0; event=0; tx_poll(&m); CHECK(!m.ts_valid); /* duplicate */
+ m.tx_pending[0].len=60; m.tx_pending[0].id=1; m.tx_pending[0].tag=8;
+ m.tx_pending[0].sent=now(); m.last_ns=now();
+ aoip_wr(&m,m.c.clock_base,AOIP_PTP_INCR,m.stamp_incr+1);
+ event=0; tx_poll(&m); CHECK(m.ts_valid && m.ts_tag==8);
+ m.ts_valid=0;
  failed=1; phy_send(&m,frame,60,9); CHECK(m.tx_id==2 && !m.tx_broken);
  failed=0;
  for(mode=1;mode<=8;mode++) {
   m.tx_pending[0].len=60; m.tx_pending[0].id=1; m.tx_pending[0].sent=now();
-  event=0; m.stamp_epoch=0; if(mode==3) { m.last_ns=now(); aoip_wr(&m,m.c.clock_base,AOIP_PTP_INCR,m.incr+1); }
+  event=0; m.stamp_epoch=0; if(mode==3) { m.last_ns=now(); aoip_wr(&m,m.c.clock_base,AOIP_PTP_INCR,m.incr+2); }
   if(mode==4) continue;
   tx_poll(&m); CHECK(!m.ts_valid);
  }

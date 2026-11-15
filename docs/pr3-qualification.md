@@ -65,3 +65,16 @@ is software evidence, not Dante hardware qualification or a 30-minute desk soak.
 Real old-kernel AF_PACKET device runtime and congestion EAGAIN remain unvalidated.
 Final same-head host, unchanged namespace e2e and AMU results are recorded in
 the PR; AMU QEMU/static checks do not establish physical old-kernel runtime.
+
+## AF_PACKET dither starvation regression
+
+The unchanged final e2e exposed deterministic timestamp starvation for some
+post-fine-step ratios: every one-count PTP_INCR dither toggle invalidated queued
+Delay_Req TX completions, preventing any further servo samples. The traced
+run stops after its -442751ns fine step. An epoch now permits only its anchored
+integer increment and the adjacent upper value; writes outside that pair and
+ToD steps still invalidate queued events. This bounds interpolation uncertainty
+to one increment count: at the maximum accepted age of 100ms,
+50MHz * 0.1s / 2^24 = 0.2981ns. The anchor prevents cumulative small writes
+from silently drifting the epoch. test_stamp and test_tx_poll prove dither
+acceptance and rejection beyond the pair. No lock/e2e policy was relaxed.

@@ -16,55 +16,92 @@
 /* ---- servo */
 void servo_init(servo_t *s)
 {
+    servo_t old = *s;
     double keep = s->last_ppb;
     memset(s, 0, sizeof(*s));
-    s->kp = 0.7;          /* ppb per ns */
-    s->ki = 0.3;          /* ppb per ns-second */
-    s->step_ns = 1000000.0;
-    s->max_ppb = 500000.0;
+    memcpy(s->levels, old.levels, sizeof(s->levels));
+    memcpy(s->expires, old.expires, sizeof(s->expires));
+    s->kp = 0.25;
+    s->ki = 0.02;
+    s->step_ns = 100000.0;
+    s->max_ppb = 150000.0;
     s->last_ppb = keep;
     s->integ = keep;
 }
 
 static double clampd(double v, double m) { return v > m ? m : v < -m ? -m : v; }
 
+/* Bound every rolling window, including the old level immediately before a
+ * change. A full history holds output rather than dropping safety evidence. */
+static double servo_glide(servo_t *s, double target, double budget, uint64_t t)
+{
+    double lo=s->last_ppb-budget, hi=s->last_ppb+budget;
+    int free_slot=-1;
+    for(int i=0;i<8;i++) {
+        if(s->state!=SERVO_LOCKED) s->level_locked[i]=0;
+        if(s->expires[i]<=t) { free_slot=i; continue; }
+        double cap=s->state==SERVO_LOCKED && s->level_locked[i] ? 1000 : 5000;
+        lo=fmax(lo,s->levels[i]-cap); hi=fmin(hi,s->levels[i]+cap);
+    }
+    if(free_slot<0) return s->last_ppb;
+    double next=fmax(lo,fmin(hi,target));
+    if(next!=s->last_ppb) {
+        s->levels[free_slot]=s->last_ppb;
+        s->expires[free_slot]=t+1000000000ull;
+        s->level_locked[free_slot]=s->state==SERVO_LOCKED;
+    }
+    return next;
+}
+
 int servo_sample(servo_t *s, double off, uint64_t t, double *ppb, double *step)
 {
     *step = 0;
-    if (s->count == 0) {
-        s->off0 = off; s->t0 = t; s->count = 1;
-        *ppb = s->last_ppb;
-        return SERVO_UNLOCKED;
-    }
-    if (s->count == 1) {
-        double dt = (double)(t - s->t0) * 1e-9;
-        if (dt < 0.05) { *ppb = s->last_ppb; return SERVO_UNLOCKED; }
-        /* the offset grows at (our rate - the leader's): the frequency that stops it */
-        s->integ = clampd(s->last_ppb - (off - s->off0) / dt, s->max_ppb);
-        s->count = 2;
-        s->t0 = t;
+    *ppb = s->last_ppb;
+    if (s->count && t <= s->t0) return s->state;
+    double elapsed = s->count ? (double)(t - s->t0) * 1e-9 : 0;
+    double dt = fmin(elapsed, .25);
+    if (!s->count) {
+        s->first = t;
+        s->acq = 1;
         if (fabs(off) > s->step_ns) {
             *step = -off;
-            *ppb = s->last_ppb = s->integ;
             s->state = SERVO_JUMP;
             return SERVO_JUMP;
         }
     }
-    double dt = (double)(t - s->t0) * 1e-9;
+    if (elapsed > .5) { s->lock_good = 0; s->good_since = 0; }
     s->t0 = t;
-    if (dt > 4.0) dt = 4.0;
-    if (fabs(off) > s->step_ns * 10.0) {   /* far off again: step, keep the frequency */
-        *step = -off;
+    if (s->acq) {
+        if (!s->count) s->first = t;
+        double x = (double)(t - s->first) * 1e-9;
+        s->phi += s->last_ppb * elapsed;
+        double y = off - s->phi;
+        s->count++;
+        s->sx += x; s->sy += y; s->sxx += x*x; s->sxy += x*y;
+        if (x < 2 || s->count < 6) return s->state = SERVO_UNLOCKED;
+        double n = s->count;
+        s->integ = clampd(-(n*s->sxy-s->sx*s->sy)/(n*s->sxx-s->sx*s->sx), 130000);
+        s->last_ppb = servo_glide(s, s->integ, 5000 * dt, t);
         *ppb = s->last_ppb;
-        return SERVO_JUMP;
+        if (fabs(s->integ - s->last_ppb) < 1e-8) {
+            s->acq = 0;
+            if (fabs(off) > 20000) { *step = -off; return s->state = SERVO_JUMP; }
+        }
+        return s->state = SERVO_UNLOCKED;
     }
-    s->integ = clampd(s->integ - s->ki * off * dt, s->max_ppb);
-    double f = clampd(s->integ - s->kp * off, s->max_ppb);
-    s->last_ppb = f;
-    *ppb = f;
-    s->lock_good = fabs(off) < 5000.0 ? s->lock_good + 1 : 0;
-    s->state = SERVO_LOCKED;
-    return SERVO_LOCKED;
+    double budget = (s->state == SERVO_LOCKED ? 1000 : 5000) * dt;
+    double lag = s->integ - s->last_ppb, di = -s->ki * off * dt;
+    if (!(fabs(lag) > budget && lag * di > 0)) s->integ = clampd(s->integ + di, 130000);
+    double target = clampd(s->integ + clampd(-s->kp * off, 20000), s->max_ppb);
+    s->last_ppb = servo_glide(s, target, budget, t);
+    *ppb = s->last_ppb;
+    if (fabs(off) < 1000) {
+        if (!s->lock_good) s->good_since = t;
+        s->lock_good++;
+    } else { s->lock_good = 0; s->good_since = 0; }
+    if (s->lock_good >= 8 && t - s->good_since >= 1750000000ull) s->state = SERVO_LOCKED;
+    else if (s->state != SERVO_LOCKED) s->state = SERVO_UNLOCKED;
+    return s->state;
 }
 
 /* ---- audio loop: a type-2 PLL, natural frequency 0.02 Hz, damping 0.7, on the phase in samples; the plant gain is

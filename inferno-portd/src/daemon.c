@@ -12,6 +12,13 @@
 
 static void on_load(void *ctx) { txflows_reanchor((port_t *)ctx); }
 
+static void clock_mute(void *ctx)
+{
+    port_t *p = ctx;
+    p->clock_ready = 0;
+    port_wr(p->hw, INF_CTRL, port_rd(p->hw, INF_CTRL) & ~3u);
+}
+
 int portd_start(port_t *p, hw_t *hw, const portd_opts_t *o)
 {
     p->hw = hw;
@@ -72,6 +79,7 @@ int portd_start(port_t *p, hw_t *hw, const portd_opts_t *o)
     LOGI("clock ready at |offset| < %.0f us held 1 s (%s)", pc.ready_ns / 1000.0,
          o->ready_us ? "--ready-us" : hw->sw_stamps ? "software stamps" : "hardware stamps");
     p->ptp = ptp_new(p->net, p->clk, p->mac, &pc);
+    ptp_on_mute(p->ptp, clock_mute, p);
     port_apply_hw(p);
     if (net_ready(p->net)) {
         info_init(p);

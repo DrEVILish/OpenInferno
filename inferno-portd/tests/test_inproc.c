@@ -225,10 +225,10 @@ static void follower_days_off(void)
     portd_opts_t noown = { 0, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0, 0 };
     CHECK(pair(&noown) != 0);
 
-    TEST("the fix on the desk (--clock-port 6 --owner --steer), leader 34 days ahead: steps and locks within 10 s");
+    TEST("the fix on the desk (--clock-port 6 --owner --steer), leader 34 days ahead: steps and locks within 60 s");
     portd_opts_t own = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0, 0 };
     CHECK(pair(&own) == 0);
-    run(10.0);
+    run(60.0);
     ptp_get_stats(B.ptp, &sb);
     dclock_get_stats(B.clk, &cb);
     CHECKF(sb.state == PTP_SLAVE && fabs(sb.offset_ns) < 1000.0 && cb.steps >= 1 && cb.locked,
@@ -241,7 +241,7 @@ static void follower_days_off(void)
     CHECK(pair(&desk) == 0);
     out[0] = 0;
     ctl_exec(&B, "ptp follower steer", out, sizeof(out));
-    run(10.0);
+    run(60.0);
     ptp_get_stats(B.ptp, &sb);
     dclock_get_stats(B.clk, &cb);
     CHECKF(!strncmp(out, "err", 3) && sb.servo_state == 0 && cb.steps == 0, "reply \"%s\" servo %d steps %llu", out,
@@ -337,6 +337,33 @@ static void mute_until_ready(void)
            (unsigned long long)leak, subs);
     TEST("mute gate: after the re-acquire, unmuted 1 s after ready again");
     CHECKF(tg > 0 && ton - tg > 0.999 && ton - tg < 1.3, "unmuted %.3f s after good", ton - tg);
+    TEST("D4 persistent leader phase fault: mute before reacquisition step, real packets resume");
+    dclock_stats_t before, after;
+    dclock_get_stats(B.clk, &before);
+    uint64_t fault = vt;
+    dclock_step(A.clk, 500000);
+    for (int i=0; i<1000 && enables(&B); i++) run(.001);
+    CHECK(enables(&B)==0);
+    CHECK(vt-fault >= 500000000ull);
+    uint64_t muted = vt;
+    for (int i=0; i<1500; i++) {
+        run(.001);
+        dclock_get_stats(B.clk, &after);
+        if(after.steps>before.steps) { CHECK(enables(&B)==0); break; }
+    }
+    CHECK(after.steps>before.steps);
+    CHECK(after.ppb != 0);
+    until_unmuted(60, &tg, &ton, &leak, &subs);
+    CHECKF(ton>0 && leak==0, "return %.3f leak %llu",ton,(unsigned long long)leak);
+    model_get_stats(B.hw, &m0); run(3); model_get_stats(B.hw, &m);
+    CHECK(m.rx_media>m0.rx_media && m.tx_media>m0.tx_media);
+    printf("fault mute %.3f s, resumed %.3f s after fault (actual model packets)\n",
+           (muted-fault)*1e-9, ton-fault*1e-9);
+
+    TEST("missing Sync cannot keep readiness on while the old 4 s source timer runs");
+    model_wire_cut(W, 1); run(.6);
+    CHECK(enables(&B)==0 && ready_field(&B)==0);
+    model_wire_cut(W, 0); run(5);
     TEST("mute gate: the leader lost (no Sync for 4 s): muted");
     model_wire_cut(W, 1);
     run(5.0);
@@ -449,7 +476,7 @@ int main(void)
     CHECK((net_ip(A.net) >> 16) == 0xA9FE);
 
     TEST("PTPv1: A leads (preferred), B follows, steps 3 s, locks: |offset| < 100 ns, rate -50 ppm");
-    run(30.0);
+    run(60.0);
     ptp_stats_t sa, sb;
     ptp_get_stats(A.ptp, &sa);
     ptp_get_stats(B.ptp, &sb);

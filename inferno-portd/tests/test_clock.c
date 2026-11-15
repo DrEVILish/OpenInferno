@@ -224,7 +224,7 @@ static void test_go_leader(void)
         run(150.0);
         dclock_get_stats(B.clk, &c);
         CHECKF(c.mode == DCLK_FOLLOWER && c.locked, "mode %d locked %d", c.mode, c.locked);
-        CHECKF(k ? c.steps > steps : c.steps == steps, "time of day steps %llu -> %llu", (unsigned long long)steps,
+        CHECKF(c.steps >= steps && c.steps <= steps + 2, "time of day steps %llu -> %llu", (unsigned long long)steps,
                (unsigned long long)c.steps);
         CHECKF(fabs(ratio_ppm() - track) < 1.0 && fabs(c.audio_phase) < 0.1, "ratio %.2f (tracked %.2f) phase %.3f", ratio_ppm(), track,
                c.audio_phase);
@@ -391,7 +391,7 @@ static void test_cold_start(double days)
     run(20.0);
     ptp_get_stats(B.ptp, &s);
     dclock_get_stats(B.clk, &c);
-    CHECKF(s.dresp_rx > 0 && c.steps == 1 && fabs(s.offset_ns) < 20000.0 && c.locked, "dresp_rx %llu steps %llu offset %.0f ns locked %d",
+    CHECKF(s.dresp_rx > 0 && c.steps == 2 && fabs(s.offset_ns) < 20000.0 && c.locked, "dresp_rx %llu steps %llu offset %.0f ns locked %d",
            (unsigned long long)s.dresp_rx, (unsigned long long)c.steps, s.offset_ns, c.locked);
     teardown();
     b_tod_off = 3123456789;

@@ -35,6 +35,10 @@
 #define CQ_ND      16
 #define CQ_RXBYTES 8192
 #define CQ_TXWORDS 512
+#define TX_PENDING 64
+/* Stable Linux UAPI: net_tstamp.h and errqueue.h; no kernel headers in AMU sysroot. */
+#define TX_FLAGS ((1 << 1) | (1 << 4) | (1 << 7))
+struct tx_error { uint32_t error; uint8_t origin, type, code, pad; uint32_t info, id; };
 
 typedef struct {
     uint8_t  d[1520];
@@ -52,6 +56,7 @@ typedef struct {
 struct model_wire {
     struct { pend_t f[WIRE_N]; int head, n; } q[2];   /* q[s] = frames travelling to side s */
     int cut;
+    uint64_t (*delay)(const uint8_t *, int);
     int (*drop)(const uint8_t *frame, int len);
 };
 
@@ -59,9 +64,15 @@ model_wire_t *model_wire_new(void) { return calloc(1, sizeof(model_wire_t)); }
 void model_wire_cut(model_wire_t *w, int cut) { w->cut = cut; }
 void model_wire_drop(model_wire_t *w, int (*drop)(const uint8_t *, int)) { w->drop = drop; }
 
+void model_wire_delay(model_wire_t *w, uint64_t (*fn)(const uint8_t *, int)) { w->delay = fn; }
+
 typedef struct {
     model_cfg_t c;
     uint64_t last_ns;
+    uint32_t stamp_incr; /* epoch anchor: adjacent sigma-delta values share an epoch */
+    uint64_t stamp_epoch; /* real PHY: reject interpolation across rate writes or ToD steps */
+    int64_t rt_offset;
+    uint64_t rt_sample;
     double   tick_frac;
     /* ptp_clock */
     uint64_t sec;
@@ -92,6 +103,9 @@ typedef struct {
     uint32_t cq_tx_frames, cq_tx_rejects, cq_rx_frames, cq_rx_over, cq_rx_filt;
     pend_t   pend[64];
     int      pend_head, pend_n;
+    uint32_t tx_id;
+    int tx_broken;
+    struct { uint32_t id, tag; uint64_t sent; int len; uint8_t frame[1514]; } tx_pending[TX_PENDING];
     /* the desk audio clock and fs_phase */
     double   desk_pos;             /* desk frames (samples), not wrapped */
     double   desk_ratio_rel;       /* CS2000 ratio / nominal */
@@ -218,7 +232,7 @@ static void tx_restart(model_t *m, int f)
     else m->txf[f].next_t = now + 1;
 }
 
-static void phy_send(model_t *m, const uint8_t *frame, int len)
+static void phy_send(model_t *m, const uint8_t *frame, int len, int tag)
 {
     if (m->c.wire) {
         int to = !m->c.wire_side;
@@ -228,12 +242,32 @@ static void phy_send(model_t *m, const uint8_t *frame, int len)
         memcpy(f->d, frame, (size_t)len);
         f->len = len;
         f->arrive_ns = g_now_ns() + m->c.wire_delay_ns + m->c.tx_wire_late_ns;
+        if (m->c.wire->delay) f->arrive_ns += m->c.wire->delay(frame, len);
         q->n++;
         return;
     }
     if (m->c.phy_fd < 0) return;
     if (m->c.phy_packet) {
-        if (send(m->c.phy_fd, frame, (size_t)len, MSG_DONTWAIT) < 0 && errno != EAGAIN) LOGD("model PHY send: %d", errno);
+        ssize_t n = send(m->c.phy_fd, frame, (size_t)len, MSG_DONTWAIT);
+        if (n != len) {
+            /* EAGAIN precedes skb_setup_tx_timestamp/ID allocation in packet_snd.
+             * Other failures may follow it: fail closed until the socket is reopened. */
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                m->tx_broken = 1;
+                LOGE("model PHY TX timestamp ID state lost: %d (reopen backend)", errno);
+            }
+            return;
+        }
+        uint32_t id = m->tx_id++;
+        if (tag >= 0 && !m->tx_broken) {
+            for (int i = 0; i < TX_PENDING; i++) {
+                if (m->tx_pending[i].len) continue;
+                m->tx_pending[i].id = id; m->tx_pending[i].tag = (uint32_t)tag;
+                m->tx_pending[i].sent = g_now_ns(); m->tx_pending[i].len = len;
+                memcpy(m->tx_pending[i].frame, frame, (size_t)len);
+                break; /* full: omit timestamp, never fabricate one */
+            }
+        }
     } else {
         uint8_t b[1530];
         uint64_t t = g_now_ns();
@@ -295,7 +329,7 @@ static void tx_packet(model_t *m, int f, uint32_t t)
             if (bps == 4) { put32(s, v << 8); s += 4; }
             else { s[0] = (uint8_t)(v >> 16); s[1] = (uint8_t)(v >> 8); s[2] = (uint8_t)v; s += 3; }
         }
-    phy_send(m, p, 42 + 9 + pl);
+    phy_send(m, p, 42 + 9 + pl, -1);
     m->tx_packets++;
     m->st_txmedia++;
 }
@@ -381,7 +415,8 @@ static void cq_enqueue(model_t *m, const uint8_t *p, int len, uint64_t arrive_ns
     cq_frame_t *f = &m->rxq[(m->rxq_head + m->rxq_n) % CQ_ND];
     memcpy(f->d, p, (size_t)len);
     f->len = len;
-    tod_at(m, arrive_ns + m->c.rx_stamp_late_ns, &f->ts_sec, &f->ts_ns);
+    int64_t noise = m->c.rx_noise_ns ? m->c.rx_noise_ns(p, len) : 0;
+    tod_at(m, arrive_ns + m->c.rx_stamp_late_ns + noise, &f->ts_sec, &f->ts_ns);
     m->rxq_n++;
     m->rx_bytes += (len + 3) & ~3;
     m->cq_rx_frames++;
@@ -393,6 +428,104 @@ static void phy_input(model_t *m, const uint8_t *p, int len, uint64_t arrive_ns)
     if (len < 14) return;
     if (rx_claim(m, p, len)) return;
     cq_enqueue(m, p, len, arrive_ns);
+}
+
+/* CLOCK_REALTIME stamps are converted only with a contemporaneous monotonic bracket.
+ * Reject broad brackets rather than turn scheduler latency into timestamp precision. */
+static int stamp_convert(uint64_t stamp, uint64_t a, uint64_t rt, uint64_t b,
+                         uint64_t epoch, uint64_t *at)
+{
+    if (b < a || b - a > 1000 || stamp > rt || rt - stamp > 100000000) return 0;
+    uint64_t mid = a + (b - a) / 2, age = rt - stamp;
+    if (age > mid || mid - age < epoch) return 0;
+    *at = mid - age;
+    return 1;
+}
+
+static int rx_stamp(model_t *m, struct msghdr *mh, uint64_t *at)
+{
+    if (mh->msg_flags & (MSG_TRUNC | MSG_CTRUNC)) return 0;
+    struct timespec ts = {0}, a, rt, b;
+    int found = 0;
+    for (struct cmsghdr *c = CMSG_FIRSTHDR(mh); c; c = CMSG_NXTHDR(mh, c)) {
+        if (c->cmsg_len < CMSG_LEN(0) ||
+            c->cmsg_len > (size_t)((char *)mh->msg_control + mh->msg_controllen - (char *)c)) return 0;
+        if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_TIMESTAMPNS) continue;
+        if (found++ || c->cmsg_len != CMSG_LEN(sizeof(ts))) return 0;
+        memcpy(&ts, CMSG_DATA(c), sizeof(ts));
+    }
+    if (!found || ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000) return 0;
+    if (clock_gettime(CLOCK_MONOTONIC, &a) || clock_gettime(CLOCK_REALTIME, &rt) ||
+        clock_gettime(CLOCK_MONOTONIC, &b)) return 0;
+    uint64_t an = (uint64_t)a.tv_sec * 1000000000 + a.tv_nsec;
+    uint64_t bn = (uint64_t)b.tv_sec * 1000000000 + b.tv_nsec;
+    uint64_t rn = (uint64_t)rt.tv_sec * 1000000000 + rt.tv_nsec;
+    if (bn < an || bn - an > 1000) return 0;
+    int64_t offset = (int64_t)(rn - (an + (bn - an) / 2));
+    /* Allow normal realtime frequency discipline (500 ppm), but invalidate queued stamps on steps. */
+    if (m->rt_sample && (bn < m->rt_sample ||
+        llabs(offset - m->rt_offset) > (int64_t)(1000 + (bn - m->rt_sample) / 2000)))
+        m->stamp_epoch = bn;
+    m->rt_sample = bn;
+    m->rt_offset = offset;
+    return stamp_convert((uint64_t)ts.tv_sec * 1000000000 + ts.tv_nsec,
+                         an, rn, bn, m->stamp_epoch, at);
+}
+
+/* Errorqueue processing shares the RX clock bracket and epoch rejection. */
+static void tx_poll(model_t *m)
+{
+    uint64_t now = g_now_ns();
+    for (int i = 0; i < TX_PENDING; i++)
+        if (m->tx_pending[i].len && (now < m->tx_pending[i].sent ||
+            now - m->tx_pending[i].sent > 100000000)) m->tx_pending[i].len = 0;
+    for (int k = 0; k < 256; k++) {
+        uint8_t frame[1600];
+        union { struct cmsghdr align; char bytes[256]; } control;
+        struct iovec io = {frame, sizeof(frame)};
+        struct msghdr mh = {0};
+        mh.msg_iov = &io; mh.msg_iovlen = 1;
+        mh.msg_control = control.bytes; mh.msg_controllen = sizeof(control.bytes);
+        ssize_t n = recvmsg(m->c.phy_fd, &mh, MSG_ERRQUEUE | MSG_DONTWAIT);
+        if (n < 0) break;
+        if (mh.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) continue;
+        struct tx_error err = {0};
+        struct timespec ts[3] = {{0}};
+        int errors = 0, times = 0, bad = 0;
+        for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh); c; c = CMSG_NXTHDR(&mh, c)) {
+            if (c->cmsg_len < CMSG_LEN(0) || c->cmsg_len >
+                (size_t)((char *)mh.msg_control + mh.msg_controllen - (char *)c)) { bad = 1; break; }
+            if (c->cmsg_level == SOL_PACKET && c->cmsg_type == 16) {
+                if (errors++ || c->cmsg_len < CMSG_LEN(sizeof(err))) { bad = 1; break; }
+                memcpy(&err, CMSG_DATA(c), sizeof(err));
+            }
+            if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_TIMESTAMPING) {
+                if (times++ || c->cmsg_len != CMSG_LEN(sizeof(ts))) { bad = 1; break; }
+                memcpy(ts, CMSG_DATA(c), sizeof(ts));
+            }
+        }
+        if (bad || errors != 1 || times != 1 || err.error != ENOMSG ||
+            err.origin != 4 || err.type || err.code || err.info != 0 || m->tx_broken) continue;
+        for (int i = 0; i < TX_PENDING; i++) {
+            if (!m->tx_pending[i].len || m->tx_pending[i].id != err.id) continue;
+            int len = m->tx_pending[i].len;
+            m->tx_pending[i].len = 0; /* duplicate records cannot publish twice */
+            if (n != len || memcmp(frame, m->tx_pending[i].frame, (size_t)len)) break;
+            /* Present the validated software time to the common RX conversion helper. */
+            union { struct cmsghdr align; char bytes[CMSG_SPACE(sizeof(struct timespec))]; } cb;
+            struct msghdr stamp = {0};
+            stamp.msg_control = cb.bytes; stamp.msg_controllen = sizeof(cb.bytes);
+            struct cmsghdr *c = CMSG_FIRSTHDR(&stamp);
+            c->cmsg_level = SOL_SOCKET; c->cmsg_type = SCM_TIMESTAMPNS;
+            c->cmsg_len = CMSG_LEN(sizeof(struct timespec));
+            memcpy(CMSG_DATA(c), &ts[0], sizeof(ts[0]));
+            uint64_t at;
+            if (!rx_stamp(m, &stamp, &at) || m->ts_valid) break;
+            tod_at(m, at, &m->ts_sec, &m->ts_ns);
+            m->ts_tag = m->tx_pending[i].tag; m->ts_valid = 1;
+            break;
+        }
+    }
 }
 
 static void phy_poll(model_t *m)
@@ -416,6 +549,7 @@ static void phy_poll(model_t *m)
         return;
     }
     if (m->c.phy_fd < 0) return;
+    if (m->c.phy_packet) tx_poll(m);
     for (int k = 0; k < 256; k++) {
         uint8_t b[1600];
         if (m->c.phy_packet) {
@@ -429,18 +563,10 @@ static void phy_poll(model_t *m)
             mh.msg_control = cbuf; mh.msg_controllen = sizeof(cbuf);
             ssize_t n = recvmsg(m->c.phy_fd, &mh, MSG_DONTWAIT);
             if (n <= 0) break;
-            if (sll.sll_pkttype == PACKET_OUTGOING) continue;
-            /* the kernel's receive time (SO_TIMESTAMPNS, CLOCK_REALTIME) as our host time: the model's stand-in for
-             * the SFD stamp, not the time this 1 ms poll ran */
-            uint64_t at = now;
-            for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh); c; c = CMSG_NXTHDR(&mh, c))
-                if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_TIMESTAMPNS) {
-                    struct timespec ts, rt;
-                    memcpy(&ts, CMSG_DATA(c), sizeof(ts));
-                    clock_gettime(CLOCK_REALTIME, &rt);
-                    int64_t ago = ((int64_t)rt.tv_sec - ts.tv_sec) * 1000000000LL + (rt.tv_nsec - ts.tv_nsec);
-                    if (ago >= 0 && ago < 100000000LL) at = now - (uint64_t)ago;
-                }
+            if (n > 1514 || mh.msg_namelen < sizeof(sll) ||
+                sll.sll_pkttype == PACKET_OUTGOING) continue;
+            uint64_t at;
+            if (!rx_stamp(m, &mh, &at)) continue;
             phy_input(m, b, (int)n, at);
         } else {
             ssize_t n = recv(m->c.phy_fd, b, sizeof(b), MSG_DONTWAIT);
@@ -597,10 +723,10 @@ static void cq_wr(model_t *m, uint32_t o, uint32_t v)
         for (int i = 0; i < len; i++) f[i] = (uint8_t)(m->txw[i / 4] >> (24 - 8 * (i % 4)));
         m->txw_n = 0;
         if (!(m->cq_ctrl & 1)) break;
-        phy_send(m, f, len);
+        phy_send(m, f, len, (v & 0x8000) ? (int)((v >> 16) & 0xFF) : -1);
         m->cq_tx_frames++;
         m->st_txcpu++;
-        if (v & 0x8000) {
+        if ((v & 0x8000) && !m->c.phy_packet) {
             tod_at(m, g_now_ns(), &m->ts_sec, &m->ts_ns);
             m->ts_valid = 1;
             m->ts_tag = (v >> 16) & 0xFF;
@@ -653,7 +779,15 @@ static void aoip_wr(model_t *m, uint32_t blk, uint32_t o, uint32_t v)
     case AOIP_SRC_MAC_LO: if (own) m->src_mac_lo = v; break;
     case AOIP_SRC_IP: if (own) m->src_ip = v; break;
     case AOIP_LINK_OFFSET: if (own) m->link_offset = v; break;
-    case AOIP_PTP_INCR: if (ck) m->incr = v; else m->own_incr = v; break;
+    case AOIP_PTP_INCR:
+        if (ck) {
+            if (m->c.phy_packet && (v < m->stamp_incr || (uint64_t)v > (uint64_t)m->stamp_incr + 1)) {
+                m->stamp_epoch = m->last_ns;
+                m->stamp_incr = v;
+            }
+            m->incr = v;
+        } else m->own_incr = v;
+        break;
     case AOIP_MEDIA_INC: if (ck) m->media_inc = v; else m->own_minc = v; break;
     case AOIP_SET_SEC_HI: m->set_sec_hi = v & 0xFFFF; break;
     case AOIP_SET_SEC_LO: m->set_sec_lo = v; break;
@@ -661,6 +795,7 @@ static void aoip_wr(model_t *m, uint32_t blk, uint32_t o, uint32_t v)
     case AOIP_SET_MEDIA: m->set_media = v; break;
     case AOIP_CLOCK_CMD:
         if (!ck) break;
+        if ((v & 1) && m->c.phy_packet) m->stamp_epoch = m->last_ns;
         if (v & 1) { m->sec = ((uint64_t)m->set_sec_hi << 32) | m->set_sec_lo; m->ns = m->set_ns; m->frac24 = 0; }
         if (v & 2) {
             m->media_pos_unwrapped += (double)(int32_t)(m->set_media - m->media_ts);
@@ -822,7 +957,16 @@ int model_packet_socket(const char *ifname)
     mr.mr_type = PACKET_MR_PROMISC;
     setsockopt(fd, SOL_PACKET, PACKET_ADD_MEMBERSHIP, &mr, sizeof(mr));
     int on = 1;
-    setsockopt(fd, SOL_SOCKET, SO_TIMESTAMPNS, &on, sizeof(on));
+    if (setsockopt(fd, SOL_SOCKET, SO_TIMESTAMPNS, &on, sizeof(on)) < 0) {
+        LOGE("model PHY requires SO_TIMESTAMPNS: %d", errno);
+        close(fd);
+        return -1;
+    }
+    int txflags = TX_FLAGS;
+    if (setsockopt(fd, SOL_SOCKET, SO_TIMESTAMPING, &txflags, sizeof(txflags)) < 0) {
+        LOGE("model PHY requires SOFTWARE TX timestamping with OPT_ID: %d", errno);
+        close(fd); return -1;
+    }
     int rcv = 4 << 20;
     setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcv, sizeof(rcv));
     return fd;

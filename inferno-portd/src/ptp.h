@@ -105,6 +105,7 @@ typedef struct {
     double   ready_ns;           /* the mute gate's |offset| threshold (ptp_ready_ns); 0: PTP_READY_NS */
 } ptp_cfg_t;
 
+void ptp_on_mute(ptp_t *p, void (*fn)(void *), void *ctx);
 ptp_t *ptp_new(net_t *n, struct dclock *clk, const uint8_t mac[6], const ptp_cfg_t *cfg);
 void   ptp_free(ptp_t *p);
 void   ptp_set_role(ptp_t *p, int role, int steer);

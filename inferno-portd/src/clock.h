@@ -13,13 +13,20 @@
 /* ---- the PI servo of the PTP follower (offset in ns -> frequency in ppb) */
 enum { SERVO_UNLOCKED = 0, SERVO_JUMP = 1, SERVO_LOCKED = 2 };
 typedef struct {
-    double   kp, ki;               /* per sample (offset ns -> ppb) */
-    double   step_ns;              /* |offset| above it: step (before lock; 10 x after) */
+    double   kp, ki;               /* ppb/ns and ppb/(ns s) */
+    double   step_ns;              /* first Sync coarse-step threshold */
     double   max_ppb;
     int      state, count, lock_good;
     double   integ;                /* ppb */
+    int acq;
+    double sx, sy, sxx, sxy, phi;
+    uint64_t first, good_since;
     double   off0;
     uint64_t t0;
+    /* Previous staircase levels remain in rolling windows until change + 1s. */
+    double levels[8];
+    uint64_t expires[8];
+    int level_locked[8];
     double   last_ppb;
 } servo_t;
 void   servo_init(servo_t *s);

@@ -23,7 +23,7 @@ SRCS    := util.c hw_devmem.c fpga_model.c pktq.c net.c mdns.c port.c arc.c flow
            ptp.c clock.c ctl.c daemon.c
 OBJS_H  := $(SRCS:%.c=build/host/%.o)
 OBJS_P  := $(SRCS:%.c=$(PPCB)/%.o)
-TESTS   := test_unit test_inproc test_clock test_net test_edges test_hw
+TESTS   := test_qualification test_d4 test_unit test_inproc test_clock test_net test_edges test_hw test_stamp test_rx_poll test_tx_poll
 
 .PHONY: all ppc amu check check-unit check-ppc check-amu check-e2e check-cli clean
 all: build/host/inferno-portd
@@ -46,6 +46,25 @@ build/host/test_%.o: tests/test_%.c tests/*.h src/*.h | build/host
 	$(CC) $(WARN) $(CFLAGS) -Isrc -c -o $@ $<
 $(PPCB)/test_%.o: tests/test_%.c tests/*.h src/*.h | $(PPCB)
 	$(PPCCC) $(WARN) $(CFLAGS) -mcpu=e300c3 -Isrc -c -o $@ $<
+build/host/test_qualification.o $(PPCB)/test_qualification.o: tests/test_inproc.c
+build/host/test_stamp.o $(PPCB)/test_stamp.o: src/fpga_model.c
+build/host/test_stamp: build/host/test_stamp.o build/host/util.o
+	$(CC) -o $@ $^ -lm
+$(PPCB)/test_stamp: $(PPCB)/test_stamp.o $(PPCB)/util.o
+	$(PPCCC) -static -o $@ $^ -lm
+
+build/host/test_rx_poll.o $(PPCB)/test_rx_poll.o: src/fpga_model.c
+build/host/test_rx_poll: build/host/test_rx_poll.o build/host/util.o
+	$(CC) -o $@ $^ -lm
+$(PPCB)/test_rx_poll: $(PPCB)/test_rx_poll.o $(PPCB)/util.o
+	$(PPCCC) -static -o $@ $^ -lm
+
+build/host/test_tx_poll.o $(PPCB)/test_tx_poll.o: src/fpga_model.c
+build/host/test_tx_poll: build/host/test_tx_poll.o build/host/util.o
+	$(CC) -o $@ $^ -lm
+$(PPCB)/test_tx_poll: $(PPCB)/test_tx_poll.o $(PPCB)/util.o
+	$(PPCCC) -static -o $@ $^ -lm
+
 # The hardware test includes a backend with local mocks; libc is never interposed.
 build/host/test_hw.o $(PPCB)/test_hw.o: src/hw_devmem.c
 build/host/test_hw: build/host/test_hw.o build/host/util.o

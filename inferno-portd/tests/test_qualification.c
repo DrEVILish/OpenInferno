@@ -77,7 +77,7 @@ static void qualify(int k)
     uint64_t start=vt, change_t=vt, steps=0, leak=0;
     int oldlocked=0, played=0, muted=0, resumed=0;
     double history[1001]={0}; int lockhistory[1001]={0};
-    long double regs[1000]={0}, targets[1000]={0}, rollreg=0, rolltarget=0;
+    double errors[1000]={0}, rollerror=0;
     double lastchange[4]={0}; uint64_t changetime[4]={0}; int changes=0;
     model_stats_t before={0}, after;
     for(int i=0;i<duration[k]*1000;i++) {
@@ -125,11 +125,11 @@ static void qualify(int k)
         if(first>0 && !enables(&B)) muted=1;
         double reg=clk_rd(B.hw,AOIP_MEDIA_INC);
         double target=335544320.*(1+s.ppb*1e-9)*48000*256/1e9;
-        rollreg+=reg-regs[i%1000]; rolltarget+=target-targets[i%1000];
-        regs[i%1000]=reg; targets[i%1000]=target;
+        rollerror+=(reg-target)-errors[i%1000];
+        errors[i%1000]=reg-target;
         /* Every rolling 1s quantized mean tracks the integrated command to
          * <1 count in its sum, hence <1e9/(1000*nominal) ppb in its mean. */
-        if(i>=999) CHECKF(fabsl(rollreg-rolltarget)<1.00001,"quant case %d t %.3f residual %.9f",k,sec,(double)(rollreg-rolltarget));
+        if(i>=999) CHECKF(fabs(rollerror)<1.00001,"quant case %d t %.3f residual %.9f",k,sec,rollerror);
         sumreg+=reg; sumtarget+=target;
         if(i%250==249) {
             /* Sigma-delta error is bounded by one register count per window.

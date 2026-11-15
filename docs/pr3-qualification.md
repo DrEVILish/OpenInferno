@@ -29,8 +29,8 @@ Thus the counterexample is independent of the earlier rolling defect.
 MEDIA_INC is integrated against the actual commanded frequency each tick.
 For nominal increment N=335544320*48000*256/1e9, sigma-delta residual over any
 window of n writes is <1 count, so its mean frequency error is <1e9/(n*N)ppb.
-The 250ms and every rolling 1s mean explicitly check this bound; long-double
-rolling sums avoid accumulated floating-point cancellation. The one-second
+The 250ms and every rolling 1s mean explicitly check this bound; rolling sums of per-tick residuals avoid subtracting large register sums
+(including on AMU, whose long double is 64 bits). The one-second
 quantized mean differs from command mean by <0.243ppb; comparison of two such
 means adds <0.486ppb to the applicable command excursion bound. Instantaneous
 integer writes are not claimed to satisfy an analog pitch-slew limit.

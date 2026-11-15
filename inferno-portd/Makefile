@@ -46,6 +46,7 @@ build/host/test_%.o: tests/test_%.c tests/*.h src/*.h | build/host
 	$(CC) $(WARN) $(CFLAGS) -Isrc -c -o $@ $<
 $(PPCB)/test_%.o: tests/test_%.c tests/*.h src/*.h | $(PPCB)
 	$(PPCCC) $(WARN) $(CFLAGS) -mcpu=e300c3 -Isrc -c -o $@ $<
+build/host/test_qualification.o $(PPCB)/test_qualification.o: tests/test_inproc.c
 build/host/test_stamp.o $(PPCB)/test_stamp.o: src/fpga_model.c
 build/host/test_stamp: build/host/test_stamp.o build/host/util.o
 	$(CC) -o $@ $^ -lm

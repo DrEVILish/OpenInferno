@@ -212,6 +212,15 @@ void port_unadvertise(port_t *p)
     p->advertised = 0;
 }
 
+/* RX / TX enable only when the clock is ready: a stopped flow plays zeros, Dante receivers mute a paused one. Never
+ * media_rate's MUTE (0x144): that mutes the whole desk (clock design note 2026-11-14 section 4) */
+static void port_wr_ctrl(port_t *p)
+{
+    int cols = p->fs > 50000 ? MIN(p->channels, p->caps_ch / 2) : p->channels;
+    uint32_t en = !p->ptp || p->clock_ready ? 3u : 0u;
+    port_wr(p->hw, INF_CTRL, en | ((uint32_t)cols << 8));
+}
+
 void port_apply_hw(port_t *p)
 {
     hw_t *h = p->hw;
@@ -223,8 +232,7 @@ void port_apply_hw(port_t *p)
     port_wr(h, INF_LATENCY, (uint32_t)(p->lat_mode & 3));
     uint32_t got = port_rd(h, INF_LATENCY) & 3;
     if ((int)got != p->lat_mode) { LOGW("latency mode %d refused by the build (MAXLAT %d)", p->lat_mode, p->maxlat); p->lat_mode = (int)got; }
-    int cols = p->fs > 50000 ? MIN(p->channels, p->caps_ch / 2) : p->channels;
-    port_wr(h, INF_CTRL, 3u | ((uint32_t)cols << 8));
+    port_wr_ctrl(p);
 }
 
 int port_set_latency(port_t *p, int mode)
@@ -322,7 +330,15 @@ void port_tick(port_t *p, uint64_t now)
     txflows_tick(p, now);
     sub_tick(p, now);
     info_tick(p, now);
-    if (p->ptp) ptp_tick(p->ptp, now);
+    if (p->ptp) {
+        ptp_tick(p->ptp, now);
+        int ready = ptp_clock_ready(p->ptp);
+        if (ready != p->clock_ready) {
+            LOGI("clock %s: Inferno RX / TX %s", ready ? "ready" : "not ready", ready ? "on" : "muted");
+            p->clock_ready = ready;
+            port_wr_ctrl(p);
+        }
+    }
     if (p->clk) dclock_tick(p->clk, now);
     if (p->dirty && p->state_path[0] && now >= p->next_save) {
         if (settings_save(p) == 0) p->dirty = 0;

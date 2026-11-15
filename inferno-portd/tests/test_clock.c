@@ -73,8 +73,8 @@ static void setup(int fail_leader, int8_t log_sync)
     port_defaults(&B);
     A.n = 0; snprintf(A.desk, sizeof(A.desk), "FOH"); A.mac[5] = 0x11;
     B.n = 1; snprintf(B.desk, sizeof(B.desk), "MON"); B.mac[5] = 0x22;
-    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0 };
-    portd_opts_t ob = { 1, 1, 1, fail_leader, R0, PTP_ROLE_FOLLOWER, 1, log_sync, 0, acq_ppm_s };
+    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0, 0 };
+    portd_opts_t ob = { 1, 1, 1, fail_leader, R0, PTP_ROLE_FOLLOWER, 1, log_sync, 0, acq_ppm_s, 0 };
     CHECK(portd_start(&A, mk(0, 1, 0.0, 0.0, 1760000000ull * 1000000000ull, 0), &oa) == 0);
     CHECK(portd_start(&B, mk(1, 2, 50.0, desk_ppm, (uint64_t)(1760000000ll * 1000000000ll + b_tod_off), 1), &ob) == 0);
     ns = 0;

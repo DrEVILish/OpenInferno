@@ -798,6 +798,7 @@ hw_t *model_open(const model_cfg_t *cfg)
     h->clock_base = cfg->clock_base;
     h->dclk_base = cfg->dclk_base;
     h->cs2k_base = cfg->cs2k_base;
+    h->sw_stamps = cfg->phy_fd >= 0;   /* a real-time PHY; the in-memory wire's stamps are exact */
     return h;
 }
 

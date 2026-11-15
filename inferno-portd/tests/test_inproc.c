@@ -72,8 +72,8 @@ static void latency_beyond_buffer(void)
     A.n = 0; snprintf(A.desk, sizeof(A.desk), "FOH"); A.mac[5] = 0x31;
     B.n = 1; snprintf(B.desk, sizeof(B.desk), "MON"); B.mac[5] = 0x42;
     A.lat_mode = 3; B.lat_mode = 0;
-    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0 };
-    portd_opts_t ob = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0 };
+    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0, 0 };
+    portd_opts_t ob = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0, 0 };
     CHECK(portd_start(&A, mk(0, 1, 0.0, 1760000000ull * 1000000000ull), &oa) == 0);
     CHECK(portd_start(&B, mk_jb(1, 2, 0.0, 1760000000ull * 1000000000ull, 96), &ob) == 0);
     run(2.0);
@@ -124,8 +124,8 @@ static void stamp_case(const char *what, uint32_t rx_late, uint32_t tx_late, int
     port_defaults(&B);
     A.n = 0; snprintf(A.desk, sizeof(A.desk), "FOH"); A.mac[5] = 0x11;
     B.n = 1; snprintf(B.desk, sizeof(B.desk), "MON"); B.mac[5] = 0x22;
-    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0 };
-    portd_opts_t ob = { 0, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 0, -2, 0, 0 };
+    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0, 0 };
+    portd_opts_t ob = { 0, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 0, -2, 0, 0, 0 };
     CHECK(portd_start(&A, mk(0, 1, 0.0, 1760000000ull * 1000000000ull), &oa) == 0);
     model_cfg_t m;
     memset(&m, 0, sizeof(m));
@@ -200,7 +200,7 @@ static int pair(const portd_opts_t *ob)
     port_defaults(&B);
     A.n = 0; snprintf(A.desk, sizeof(A.desk), "DANTE"); A.mac[5] = 0x51;
     B.n = 5; snprintf(B.desk, sizeof(B.desk), "OpenProSeries"); B.mac[5] = 0x06;
-    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0 };
+    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0, 0 };
     CHECK(portd_start(&A, mk(0, 1, 0.0, TOD_L), &oa) == 0);
     hw_t *h = mk(1, 2, 2.8, TOD_L - DAYS34);
     if (portd_start(&B, h, ob)) { h->ops->close(h); B.hw = NULL; return -1; }
@@ -212,7 +212,7 @@ static void follower_days_off(void)
     ptp_stats_t sb;
     dclock_stats_t cb;
     TEST("desk b32 line (--ptp follower, no --owner / --steer), leader 34 days ahead: measured, never stepped");
-    portd_opts_t desk = { 0, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 0, -2, 0, 0 };
+    portd_opts_t desk = { 0, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 0, -2, 0, 0, 0 };
     CHECK(pair(&desk) == 0);
     run(30.0);
     ptp_get_stats(B.ptp, &sb);
@@ -222,11 +222,11 @@ static void follower_days_off(void)
            (unsigned long long)cb.steps);
 
     TEST("--steer without --owner is refused (the servo's steps would be dropped: dclock_step needs the owner)");
-    portd_opts_t noown = { 0, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0 };
+    portd_opts_t noown = { 0, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0, 0 };
     CHECK(pair(&noown) != 0);
 
     TEST("the fix on the desk (--clock-port 6 --owner --steer), leader 34 days ahead: steps and locks within 10 s");
-    portd_opts_t own = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0 };
+    portd_opts_t own = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0, 0 };
     CHECK(pair(&own) == 0);
     run(10.0);
     ptp_get_stats(B.ptp, &sb);
@@ -248,6 +248,100 @@ static void follower_days_off(void)
            sb.servo_state, (unsigned long long)cb.steps);
 }
 
+/* clock design note 2026-11-14 section 4 (PR 4): INF_CTRL RX / TX enable stay off until the clock is ready (PTP locked,
+ * |offset| < 5 us, held 1 s), and again on a re-acquire; a leader is ready at once */
+static int enables(const port_t *p) { return (int)(port_rd(p->hw, INF_CTRL) & 3); }
+static int ready_field(port_t *p)
+{
+    static char out[16384];
+    out[0] = 0;
+    ctl_exec(p, "status", out, sizeof(out));
+    const char *f = strstr(out, "\nclock_ready=");
+    return f ? atoi(f + 13) : -1;
+}
+
+/* run until B's enables come on (at most max_s): the first time of B's current good run (SLAVE, servo locked,
+ * |offset| < 5 us), the unmute time, B's media frames played / packets sent while muted, B subscribed while muted */
+static void until_unmuted(double max_s, double *t_good, double *t_on, uint64_t *leak, int *subs_muted)
+{
+    model_stats_t m0, m;
+    model_get_stats(B.hw, &m0);
+    *t_good = *t_on = -1;
+    *leak = 0;
+    *subs_muted = 0;
+    for (uint64_t end = vt + (uint64_t)(max_s * 1e9); vt < end;) {
+        run(0.001);
+        ptp_stats_t s;
+        ptp_get_stats(B.ptp, &s);
+        int good = s.state == PTP_SLAVE && s.servo_state == SERVO_LOCKED && fabs(s.offset_ns) < 5000.0;
+        if (!good) *t_good = -1;
+        else if (*t_good < 0) *t_good = (double)vt * 1e-9;
+        if (enables(&B)) { *t_on = (double)vt * 1e-9; return; }
+        model_get_stats(B.hw, &m);
+        *leak = (m.rx_media - m0.rx_media) + (m.tx_media - m0.tx_media);
+        if (receiving(&B, 0, 8) == 8) *subs_muted = 1;
+    }
+}
+
+static void mute_until_ready(void)
+{
+    portd_stop(&A); A.hw->ops->close(A.hw);
+    portd_stop(&B); B.hw->ops->close(B.hw);
+    W = model_wire_new();
+    port_defaults(&A);
+    port_defaults(&B);
+    A.n = 0; snprintf(A.desk, sizeof(A.desk), "FOH"); A.mac[5] = 0x11;
+    B.n = 1; snprintf(B.desk, sizeof(B.desk), "MON"); B.mac[5] = 0x22;
+    A.lat_mode = 3; B.lat_mode = 3;
+    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0, 0 };
+    portd_opts_t ob = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0, 0 };
+    CHECK(portd_start(&A, mk(0, 1, 0.0, 1760000000ull * 1000000000ull), &oa) == 0);
+    CHECK(portd_start(&B, mk(1, 2, 50.0, 1760000003ull * 1000000000ull + 123456789ull), &ob) == 0);
+
+    TEST("mute gate: a leader (--ptp leader) is ready at once: INF_CTRL RX / TX on, clock_ready=1");
+    run(0.002);
+    CHECKF(enables(&A) == 3 && ready_field(&A) == 1, "A enables %d clock_ready %d", enables(&A), ready_field(&A));
+    for (int k = 0; k < 8; k++) {
+        char c[8];
+        snprintf(c, sizeof(c), "%02d", k + 1);
+        sub_subscribe(&B, k, c, "FOH-1");
+        sub_subscribe(&A, k, c, "MON-2");
+    }
+
+    TEST("mute gate: the follower before ready: RX / TX off, clock_ready=0, no RX frame played, no TX packet sent");
+    double tg, ton;
+    uint64_t leak;
+    int subs;
+    CHECKF(enables(&B) == 0 && ready_field(&B) == 0, "B enables %d clock_ready %d", enables(&B), ready_field(&B));
+    until_unmuted(40.0, &tg, &ton, &leak, &subs);
+    CHECKF(ton > 0 && leak == 0, "unmuted at %.3f s, %llu media frames / packets while muted", ton, (unsigned long long)leak);
+
+    TEST("mute gate: unmuted 1 s after the clock is ready (locked, |offset| < 5 us), then plays and sends");
+    CHECKF(tg > 0 && ton - tg > 0.999 && ton - tg < 1.3, "good from %.3f s, unmuted %.3f s later", tg, ton - tg);
+    CHECK(ready_field(&B) == 1);
+    model_stats_t m0, m;
+    model_get_stats(B.hw, &m0);
+    run(3.0);
+    model_get_stats(B.hw, &m);
+    CHECKF(m.rx_media > m0.rx_media && m.tx_media > m0.tx_media && receiving(&B, 0, 8) == 8 && receiving(&A, 0, 8) == 8,
+           "rx +%llu tx +%llu", (unsigned long long)(m.rx_media - m0.rx_media), (unsigned long long)(m.tx_media - m0.tx_media));
+
+    TEST("mute gate: a forced re-acquire under traffic (ctl ptp follower steer) mutes at once: no RX played, no TX sent");
+    char out[64] = "";
+    ctl_exec(&B, "ptp follower steer", out, sizeof(out));
+    run(0.002);
+    CHECKF(!strcmp(out, "ok\n") && enables(&B) == 0 && ready_field(&B) == 0, "B enables %d clock_ready %d", enables(&B),
+           ready_field(&B));
+    until_unmuted(40.0, &tg, &ton, &leak, &subs);
+    CHECKF(ton > 0 && leak == 0 && subs, "unmuted at %.3f s, %llu media frames / packets while muted, flows up while muted %d", ton,
+           (unsigned long long)leak, subs);
+    TEST("mute gate: after the re-acquire, unmuted 1 s after ready again");
+    CHECKF(tg > 0 && ton - tg > 0.999 && ton - tg < 1.3, "unmuted %.3f s after good", ton - tg);
+    TEST("mute gate: the leader lost (no Sync for 4 s): muted");
+    model_wire_cut(W, 1);
+    run(5.0);
+    CHECKF(enables(&B) == 0 && ready_field(&B) == 0, "B enables %d clock_ready %d", enables(&B), ready_field(&B));
+}
 /* The PI9696 pattern (Rust inferno, fork rev 5981fee, 48 channels; channels_subscriber.rs): it asks for flows of
  * min(nchan, 8) channels at fpp min(our fpp max, MTU), one socket per flow, and advertises MAX_CHANNELS_IN_FLOW = 8.
  * A = our 48-column port (0x10102030: 16 / 16 flows, 32 ch per flow); B stands in for PI9696 with 8 ch per flow
@@ -269,8 +363,8 @@ static void pi9696_48ch(void)
     A.n = 0; snprintf(A.desk, sizeof(A.desk), "FOH"); A.mac[5] = 0x51;
     B.n = 1; snprintf(B.desk, sizeof(B.desk), "PI"); B.mac[5] = 0x62;
     A.lat_mode = 3; B.lat_mode = 3;
-    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0 };
-    portd_opts_t ob = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0 };
+    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0, 0 };
+    portd_opts_t ob = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0, 0 };
     mk_caps = 0x10102030u;
     CHECK(portd_start(&A, mk(0, 1, 0.0, 1760000000ull * 1000000000ull), &oa) == 0);
     mk_caps = 0x10100830u;
@@ -344,8 +438,8 @@ int main(void)
     A.n = 0; snprintf(A.desk, sizeof(A.desk), "FOH"); A.mac[5] = 0x11;
     B.n = 1; snprintf(B.desk, sizeof(B.desk), "MON"); B.mac[5] = 0x22;
     A.lat_mode = 3; B.lat_mode = 3;   /* 5 ms */
-    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0 };
-    portd_opts_t ob = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0 };
+    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0, 0 };
+    portd_opts_t ob = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0, 0 };
     CHECK(portd_start(&A, mk(0, 1, 0.0, 1760000000ull * 1000000000ull), &oa) == 0);
     CHECK(portd_start(&B, mk(1, 2, 50.0, 1760000003ull * 1000000000ull + 123456789ull), &ob) == 0);
 
@@ -470,6 +564,7 @@ int main(void)
     CHECKF(receiving(&A,0,8) == 8, "48 kHz reverse: %d of 8",receiving(&A,0,8));
     CHECK(colsrc_ok(&A,0,2,0));
     latency_beyond_buffer();
+    mute_until_ready();
     xbar_stamps();
     follower_days_off();
     pi9696_48ch();

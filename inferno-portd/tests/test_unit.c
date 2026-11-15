@@ -356,8 +356,10 @@ static void test_rx_late_part(void)
     static port_t q;
     port_defaults(&q);
     q.n = 2; snprintf(q.desk, sizeof(q.desk), "LP"); q.cfg_ip = IP4(169, 254, 12, 2);
-    portd_opts_t o = {0}; o.log_sync = -2;
+    portd_opts_t o = {0}; o.log_sync = -2; o.ptp_role = PTP_ROLE_LEADER;
     CHECK(portd_start(&q, model_open(&mc), &o) == 0);
+    port_tick(&q, vnow()); /* the counter fixture needs media enabled by the normal ready gate */
+    CHECK(q.clock_ready && (port_rd(q.hw, INF_CTRL) & 3) == 3);
     uint32_t dip = IP4(239, 1, 2, 3), cfg[3] = { dip, 4321, 0 }, w0 = (3u << 16) | (2u << 8) | 1u;
     tbl_write(q.hw, TBL_RX(15, 1), cfg, 3);
     tbl_write(q.hw, TBL_RX(15, 0), &w0, 1);
@@ -410,10 +412,31 @@ static void test_restored_channels(void)
     portd_stop(&p); h->ops->close(h); unlink(path);
 }
 
+/* the mute gate's ready threshold follows the SFD stamps: 5 us for hardware stamps, 50 us for software ones (a model
+ * on a real-time PHY: kernel receive times), --ready-us overrides either */
+static void test_ready_threshold(void)
+{
+    TEST("ready threshold: hardware stamps 5 us, software stamps 50 us, --ready-us overrides");
+    CHECK(ptp_ready_ns(0, 0) == 5000.0 && ptp_ready_ns(1, 0) == 50000.0);
+    CHECK(ptp_ready_ns(0, 20) == 20000.0 && ptp_ready_ns(1, 7) == 7000.0);
+    model_cfg_t m;
+    memset(&m, 0, sizeof(m));
+    m.port_base = 0x1000; m.clock_base = 0x1000; m.dclk_base = m.cs2k_base = 0xFFFFFFFFu;
+    m.phy_fd = -1;
+    hw_t *h = model_open(&m);
+    CHECKF(!h->sw_stamps, "in-memory wire: exact stamps, sw_stamps %d", h->sw_stamps);
+    h->ops->close(h);
+    m.phy_fd = dup(0);
+    h = model_open(&m);
+    CHECKF(h->sw_stamps, "model on a PHY socket: software stamps, sw_stamps %d", h->sw_stamps);
+    h->ops->close(h);
+}
+
 int main(void)
 {
     g_log_level = LOG_WARN;
     test_ptp_msgs();
+    test_ready_threshold();
     test_servo();
     test_aloop();
     test_dns();
@@ -426,7 +449,7 @@ int main(void)
     P.n = 1;
     snprintf(P.desk, sizeof(P.desk), "MON");
     P.cfg_ip = IP4(169, 254, 10, 2);
-    portd_opts_t o = { 1, 0, 0, 0, 0, 0, 0, -2, 0, 0 };
+    portd_opts_t o = { 1, 0, 0, 0, 0, 0, 0, -2, 0, 0, 0 };
     CHECK(portd_start(&P, mkmodel(0), &o) == 0);
     CHECK(!strcmp(P.name, "MON-2") && P.devid[3] == 0xFF && P.devid[4] == 0xFE);
     CHECK(P.advertised);

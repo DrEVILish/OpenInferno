@@ -102,12 +102,21 @@ typedef struct {
     uint8_t  stratum;            /* our data set */
     int16_t  variance;
     int      steer;              /* this port's offsets steer the desk clock (the desk follows this port) */
+    double   ready_ns;           /* the mute gate's |offset| threshold (ptp_ready_ns); 0: PTP_READY_NS */
 } ptp_cfg_t;
 
 ptp_t *ptp_new(net_t *n, struct dclock *clk, const uint8_t mac[6], const ptp_cfg_t *cfg);
 void   ptp_free(ptp_t *p);
 void   ptp_set_role(ptp_t *p, int role, int steer);
 void   ptp_tick(ptp_t *p, uint64_t now);
+/* the clock is ready for audio: a leader (or PTP off) at once; a follower locked with |offset| < PTP_READY_NS for
+ * PTP_READY_HOLD_NS, again after every re-acquire (clock design note 2026-11-14 section 3) */
+#define PTP_READY_NS      5000.0    /* hardware SFD stamps */
+#define PTP_READY_SW_NS   50000.0   /* software stamps (e2e on a veth locks at ~20 us) */
+#define PTP_READY_HOLD_NS 1000000000ull
+int    ptp_clock_ready(const ptp_t *p);
+/* the |offset| threshold of ready: ready_us (--ready-us) if set, else by the stamps' kind */
+double ptp_ready_ns(int sw_stamps, uint32_t ready_us);
 int    ptp_state(const ptp_t *p);
 const char *ptp_state_name(int s);
 

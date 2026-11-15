@@ -14,6 +14,7 @@
  *     --log-sync N          leader Sync interval, log2 s (default -2)
  *     --audio-loop --cs2k --cs2k-r0 0xRATIO --fail-leader   the desk audio clock loop (clock.h; --fail-master = old alias)
  *     --audio-acquire-ppm-s R   a follower's frequency acquisition glides at R ppm/s (default 5, the loop's own limit)
+ *     --ready-us N          Inferno unmutes at |PTP offset| < N us held 1 s (default 5; 50 with software stamps)
  *     --phy IFNAME          model: its PHY is an AF_PACKET socket on IFNAME
  *     --model-id N --model-ppm P --model-desk-ppm P --model-tod NS   model: pattern id, oscillator errors, start time
  *     --ctl PATH            control socket (ctl.c)      --state FILE   persistent state
@@ -101,7 +102,7 @@ int main(int argc, char **argv)
     static port_t P;
     port_t *p = &P;
     port_defaults(p);
-    portd_opts_t o = { 0, 0, 0, 0, 0, 1, 0, -2, 0, 0 };
+    portd_opts_t o = { 0, 0, 0, 0, 0, 1, 0, -2, 0, 0, 0 };
     int portn = 1, clock_port = 1, model = 0, model_id = 1;
     uint64_t mem_base = 0xF2000000ull, model_tod = 0;
     uint32_t mem_size = 0x100000, stride = 0x1000, dclk = 0xFFFFFFFFu, cs2k = 0xFFFFFFFFu;
@@ -140,6 +141,11 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--audio-loop")) o.audio_loop = 1;
         else if (!strcmp(a, "--cs2k")) o.cs2k = 1;
         else if (ARG("--cs2k-r0")) o.cs2k_r0 = num(v);
+        else if (ARG("--ready-us")) {
+            long u = strtol(v, NULL, 10);
+            if (u < 1 || u > 1000000) { fprintf(stderr, "bad --ready-us (1..1000000)\n"); return 2; }
+            o.ready_us = (uint32_t)u;
+        }
         else if (ARG("--audio-acquire-ppm-s")) {
             o.acq_ppm_s = atof(v);
             if (!(o.acq_ppm_s > 0 && o.acq_ppm_s <= 1000)) { fprintf(stderr, "bad --audio-acquire-ppm-s (0..1000)\n"); return 2; }

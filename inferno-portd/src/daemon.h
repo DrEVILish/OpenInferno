@@ -12,6 +12,7 @@ typedef struct {
     int8_t   log_sync;
     uint8_t  stratum;
     double   acq_ppm_s;        /* --audio-acquire-ppm-s (0: DCLK_SLEW_PPM_S) */
+    uint32_t ready_us;         /* --ready-us: the mute gate's |offset| threshold (0: by the stamps, ptp_ready_ns) */
 } portd_opts_t;
 
 int  portd_start(port_t *p, hw_t *hw, const portd_opts_t *o);

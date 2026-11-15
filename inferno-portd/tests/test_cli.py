@@ -15,7 +15,8 @@ class CliEdges(unittest.TestCase):
         for args in (("--ip", "192.0.2.10/-1"), ("--ip", "192.0.2.10/33"),
                      ("--ip", "192.0.2.10/999"), ("--ip", "invalid"),
                      ("--port", "0"), ("--port", "7"),
-                     ("--rt", "0"), ("--rt", "100")):
+                     ("--rt", "0"), ("--rt", "100"),
+                     ("--ready-us", "0"), ("--ready-us", "x")):
             with self.subTest(args=args):
                 with subprocess.Popen([BIN, "--backend", "model", "-q", *args],
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as proc:

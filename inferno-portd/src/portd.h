@@ -116,6 +116,7 @@ typedef struct port {
     net_t   *net;
     mdns_t  *mdns;
     int      advertised;
+    int      clock_ready;            /* INF_CTRL RX / TX enabled (ptp_clock_ready; no PTP: always) */
     txflow_t tx[NTXF];
     rxflow_t rx[NRXF];
     sub_t    sub[MAX_CH];

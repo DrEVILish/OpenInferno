@@ -67,7 +67,10 @@ int portd_start(port_t *p, hw_t *hw, const portd_opts_t *o)
     p->clk = dclock_new(hw, &dc);
     dclock_on_load(p->clk, on_load, p);
     if (o->clock_owner) hw_wr(hw, hw->clock_base + INF_MEDIA_FS, (uint32_t)p->fs);   /* port 0's rate drives the desk clock */
-    ptp_cfg_t pc = { o->ptp_role, o->log_sync, o->stratum ? o->stratum : 4, (int16_t)0xF060, o->ptp_steer };
+    ptp_cfg_t pc = { o->ptp_role, o->log_sync, o->stratum ? o->stratum : 4, (int16_t)0xF060, o->ptp_steer,
+                     ptp_ready_ns(hw->sw_stamps, o->ready_us) };
+    LOGI("clock ready at |offset| < %.0f us held 1 s (%s)", pc.ready_ns / 1000.0,
+         o->ready_us ? "--ready-us" : hw->sw_stamps ? "software stamps" : "hardware stamps");
     p->ptp = ptp_new(p->net, p->clk, p->mac, &pc);
     port_apply_hw(p);
     if (net_ready(p->net)) {

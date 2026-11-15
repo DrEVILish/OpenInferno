@@ -23,6 +23,10 @@ typedef struct {
     uint64_t first, good_since;
     double   off0;
     uint64_t t0;
+    /* Previous staircase levels remain in rolling windows until change + 1s. */
+    double levels[8];
+    uint64_t expires[8];
+    int level_locked[8];
     double   last_ppb;
 } servo_t;
 void   servo_init(servo_t *s);

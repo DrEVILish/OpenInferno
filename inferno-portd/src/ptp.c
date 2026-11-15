@@ -451,6 +451,7 @@ static void sample(ptp_t *p)
                 LOGI("PTP: offset %.0f ns, stepping", off);
                 if (p->mute) p->mute(p->mute_ctx);
                 p->good_since = 0;
+                dclock_set_freq(p->clk, ppb);
                 dclock_step(p->clk, (int64_t)llround(step));
                 p->have_delay = 0;
                 p->t3_ok = 0; /* a Delay_Resp from before the step cannot measure the new clock */

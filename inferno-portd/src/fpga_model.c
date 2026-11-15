@@ -56,12 +56,15 @@ typedef struct {
 struct model_wire {
     struct { pend_t f[WIRE_N]; int head, n; } q[2];   /* q[s] = frames travelling to side s */
     int cut;
+    uint64_t (*delay)(const uint8_t *, int);
     int (*drop)(const uint8_t *frame, int len);
 };
 
 model_wire_t *model_wire_new(void) { return calloc(1, sizeof(model_wire_t)); }
 void model_wire_cut(model_wire_t *w, int cut) { w->cut = cut; }
 void model_wire_drop(model_wire_t *w, int (*drop)(const uint8_t *, int)) { w->drop = drop; }
+
+void model_wire_delay(model_wire_t *w, uint64_t (*fn)(const uint8_t *, int)) { w->delay = fn; }
 
 typedef struct {
     model_cfg_t c;
@@ -238,6 +241,7 @@ static void phy_send(model_t *m, const uint8_t *frame, int len, int tag)
         memcpy(f->d, frame, (size_t)len);
         f->len = len;
         f->arrive_ns = g_now_ns() + m->c.wire_delay_ns + m->c.tx_wire_late_ns;
+        if (m->c.wire->delay) f->arrive_ns += m->c.wire->delay(frame, len);
         q->n++;
         return;
     }
@@ -409,7 +413,8 @@ static void cq_enqueue(model_t *m, const uint8_t *p, int len, uint64_t arrive_ns
     cq_frame_t *f = &m->rxq[(m->rxq_head + m->rxq_n) % CQ_ND];
     memcpy(f->d, p, (size_t)len);
     f->len = len;
-    tod_at(m, arrive_ns + m->c.rx_stamp_late_ns, &f->ts_sec, &f->ts_ns);
+    int64_t noise = m->c.rx_noise_ns ? m->c.rx_noise_ns(p, len) : 0;
+    tod_at(m, arrive_ns + m->c.rx_stamp_late_ns + noise, &f->ts_sec, &f->ts_ns);
     m->rxq_n++;
     m->rx_bytes += (len + 3) & ~3;
     m->cq_rx_frames++;

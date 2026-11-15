@@ -16,8 +16,11 @@
 /* ---- servo */
 void servo_init(servo_t *s)
 {
+    servo_t old = *s;
     double keep = s->last_ppb;
     memset(s, 0, sizeof(*s));
+    memcpy(s->levels, old.levels, sizeof(s->levels));
+    memcpy(s->expires, old.expires, sizeof(s->expires));
     s->kp = 0.25;
     s->ki = 0.02;
     s->step_ns = 100000.0;
@@ -27,6 +30,28 @@ void servo_init(servo_t *s)
 }
 
 static double clampd(double v, double m) { return v > m ? m : v < -m ? -m : v; }
+
+/* Bound every rolling window, including the old level immediately before a
+ * change. A full history holds output rather than dropping safety evidence. */
+static double servo_glide(servo_t *s, double target, double budget, uint64_t t)
+{
+    double lo=s->last_ppb-budget, hi=s->last_ppb+budget;
+    int free_slot=-1;
+    for(int i=0;i<8;i++) {
+        if(s->state!=SERVO_LOCKED) s->level_locked[i]=0;
+        if(s->expires[i]<=t) { free_slot=i; continue; }
+        double cap=s->state==SERVO_LOCKED && s->level_locked[i] ? 1000 : 5000;
+        lo=fmax(lo,s->levels[i]-cap); hi=fmin(hi,s->levels[i]+cap);
+    }
+    if(free_slot<0) return s->last_ppb;
+    double next=fmax(lo,fmin(hi,target));
+    if(next!=s->last_ppb) {
+        s->levels[free_slot]=s->last_ppb;
+        s->expires[free_slot]=t+1000000000ull;
+        s->level_locked[free_slot]=s->state==SERVO_LOCKED;
+    }
+    return next;
+}
 
 int servo_sample(servo_t *s, double off, uint64_t t, double *ppb, double *step)
 {
@@ -56,7 +81,7 @@ int servo_sample(servo_t *s, double off, uint64_t t, double *ppb, double *step)
         if (x < 2 || s->count < 6) return s->state = SERVO_UNLOCKED;
         double n = s->count;
         s->integ = clampd(-(n*s->sxy-s->sx*s->sy)/(n*s->sxx-s->sx*s->sx), 130000);
-        s->last_ppb += clampd(s->integ - s->last_ppb, 5000 * dt);
+        s->last_ppb = servo_glide(s, s->integ, 5000 * dt, t);
         *ppb = s->last_ppb;
         if (fabs(s->integ - s->last_ppb) < 1e-8) {
             s->acq = 0;
@@ -68,7 +93,7 @@ int servo_sample(servo_t *s, double off, uint64_t t, double *ppb, double *step)
     double lag = s->integ - s->last_ppb, di = -s->ki * off * dt;
     if (!(fabs(lag) > budget && lag * di > 0)) s->integ = clampd(s->integ + di, 130000);
     double target = clampd(s->integ + clampd(-s->kp * off, 20000), s->max_ppb);
-    s->last_ppb += clampd(target - s->last_ppb, budget);
+    s->last_ppb = servo_glide(s, target, budget, t);
     *ppb = s->last_ppb;
     if (fabs(off) < 1000) {
         if (!s->lock_good) s->good_since = t;

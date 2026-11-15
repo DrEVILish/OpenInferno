@@ -53,6 +53,7 @@
 #define INF_RX_EARLY     (INF_BASE + 0x54)
 #define INF_RX_UNDERRUNS (INF_BASE + 0x58)
 #define INF_RX_TS_GAPS   (INF_BASE + 0x5C)
+#define INF_RX_LATE_PART (INF_BASE + 0x60)   /* flow frames taken after their play time (silence) */
 /* software model only (tests): pattern checks of the received audio (fpga_model.c); hardware reads 0 */
 #define INF_MODEL_RXPAT_OK  (INF_BASE + 0xE0)
 #define INF_MODEL_RXPAT_BAD (INF_BASE + 0xE4)

@@ -84,8 +84,9 @@ static void status(port_t *p, char *o, size_t sz)
             rcv += p->sub[k].status == SUB_RX_UNICAST || p->sub[k].status == SUB_RX_MULTICAST;
         }
     outf(o, sz, "subs=%d\nsubs_receiving=%d\n", subs, rcv);
-    outf(o, sz, "hw_tx_packets=%u\nhw_rx_ok=%u\nhw_rx_late=%u\nhw_rx_early=%u\nhw_rx_bad=%u\n", port_rd(p->hw, INF_TX_PACKETS),
-         port_rd(p->hw, INF_RX_OK), port_rd(p->hw, INF_RX_LATE), port_rd(p->hw, INF_RX_EARLY), port_rd(p->hw, INF_RX_BAD));
+    outf(o, sz, "hw_tx_packets=%u\nhw_rx_ok=%u\nhw_rx_late=%u\nhw_rx_early=%u\nhw_rx_bad=%u\nhw_rx_late_part=%u\n",
+         port_rd(p->hw, INF_TX_PACKETS), port_rd(p->hw, INF_RX_OK), port_rd(p->hw, INF_RX_LATE), port_rd(p->hw, INF_RX_EARLY),
+         port_rd(p->hw, INF_RX_BAD), port_rd(p->hw, INF_RX_LATE_PART));
     uint32_t pok = port_rd(p->hw, INF_MODEL_RXPAT_OK), pbad = port_rd(p->hw, INF_MODEL_RXPAT_BAD);
     if (pok || pbad) outf(o, sz, "model_pattern_ok=%u\nmodel_pattern_bad=%u\n", pok, pbad);
     net_stats_t ns;

@@ -280,6 +280,8 @@ static void set_state(ptp_t *p, int s)
     p->state = s;
     p->t1_ok = p->t2_ok = p->t3_ok = 0;
     p->have_delay = 0;
+    p->t1 = p->t2 = 0;
+    p->cold_done = 0;
     if (p->clk) p->servo.last_ppb = dclock_freq(p->clk);
     servo_init(&p->servo);
     p->good_since = 0;
@@ -428,6 +430,8 @@ static void sample(ptp_t *p)
             if (p->mute) p->mute(p->mute_ctx);
             dclock_step(p->clk, -ms);
             p->st.servo_state = SERVO_JUMP;
+            /* Delay estimation must not pair a pre-step Sync with a post-step request. */
+            p->t1 = p->t2 = 0;
             p->have_delay = 0;
             p->t1_ok = p->t2_ok = p->t3_ok = 0;
             return;
@@ -628,6 +632,8 @@ void ptp_tick(ptp_t *p, uint64_t now)
             p->lost = lost;
             p->t1_ok = p->t2_ok = p->t3_ok = 0;
             p->have_delay = 0;
+            p->t1 = p->t2 = 0;
+            p->cold_done = 0;
             if (p->clk) p->servo.last_ppb = dclock_freq(p->clk);
             servo_init(&p->servo);
             p->good_since = 0;

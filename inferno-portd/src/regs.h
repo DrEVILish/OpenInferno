@@ -112,4 +112,11 @@
 #define CS2K_ECHO        0x04    /* IO 0xC4: bit31 busy, 15:0 echo of the last command */
 #define CS2K_STROBE      0x08    /* IO 0xC8: write 1 to send */
 
+/* ---- the io build's identity, at fixed window offsets (PRO1: --mem-base 0xF20C0000; fpga/docs/xc3s5000.md) */
+#define XBAR_ID          0x0160  /* HOST page 0 + 0x160 (iowin C0160): port_xbar, 8.11.21; 0 without XBAR */
+#define XBAR_ID_VALUE    0x4F584231u   /* "OXB1" */
+#define FCAP_ID          0x8900  /* EXT page 8 + 0x900 (iowin C8900): aes_fcap, 8.11.15 */
+#define FCAP_ID_VALUE    0x4F464350u   /* "OFCP" */
+#define FCAP_INFO        0x8904  /* {8'd1 version, IOBUILD, 16'd0} */
+
 #endif

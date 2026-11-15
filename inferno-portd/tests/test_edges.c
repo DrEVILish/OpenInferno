@@ -498,6 +498,17 @@ static void test_small_builds(void)
     CHECK(port_set_rate(&p, 96000) == 0); CHECK(p.channels == 1);
     teardown();
 
+    TEST("the OpenProSeries 48-column port (16 / 16 flows, 32 ch per flow): 48 at 48 kHz, 24 at 96 kHz");
+    char o3[64];
+    CHECK(setup_caps(0x10102030u, 48000) == 0); CHECK(p.channels == 48 && chan_answers() == 48);
+    CHECK(((port_rd(p.hw, INF_JB_GEOM) >> 16) & 0xFF) == 48);
+    CHECK(ctl_exec(&p, "channels 49", o3, sizeof(o3)) == -1 && ctl_exec(&p, "channels 48", o3, sizeof(o3)) == 0);
+    CHECK(port_set_rate(&p, 96000) == 0); CHECK(p.channels == 24);   /* the rate change clamps 48 to 24 */
+    CHECK(((port_rd(p.hw, INF_CTRL) >> 8) & 0x7F) == 24 && ((port_rd(p.hw, INF_JB_GEOM) >> 16) & 0xFF) == 24);
+    teardown();
+    CHECK(setup_caps(0x10102030u, 96000) == 0); CHECK(p.channels == 24 && chan_answers() == 24);
+    CHECK(ctl_exec(&p, "channels 25", o3, sizeof(o3)) == -1 && ctl_exec(&p, "channels 24", o3, sizeof(o3)) == 0);
+    teardown();
     TEST("ARC 0x1000 offsets 2/4/16 (TX / RX / total channels) follow the build: full, TX-only, RX-only, small");
     static const struct { uint32_t caps; int tx, rx; } bc[] = {
         { 0, 64, 64 }, { 0x00020804u, 4, 0 }, { 0x02000802u, 0, 2 }, { 0x02010802u, 2, 2 } };
@@ -507,6 +518,13 @@ static void test_small_builds(void)
         CHECKF(get16(r + 12) == bc[i].tx && get16(r + 14) == bc[i].rx && get16(r + 26) == bc[i].tx + bc[i].rx,
                "caps %08x: TX %d RX %d total %d, want %d/%d", bc[i].caps, get16(r + 12), get16(r + 14), get16(r + 26),
                bc[i].tx, bc[i].rx);
+        teardown();
+    }
+    TEST("ARC 0x3000 RX channel list follows the build: full 64, TX-only 0, RX-only 2, small 2 entries");
+    for (size_t i = 0; i < sizeof(bc) / sizeof(bc[0]); i++) {
+        CHECK(setup_caps(bc[i].caps, 48000) == 0);
+        if (bc[i].rx) check_channel_pages(0x3000, bc[i].rx, 16, 20);
+        else { arc(0x3000, pg1, 4, r, sizeof(r)); CHECKF(r[11] == 0, "caps %08x: %d RX entries, want 0", bc[i].caps, r[11]); }
         teardown();
     }
 }

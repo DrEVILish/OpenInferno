@@ -107,6 +107,111 @@ static int colsrc_ok(port_t *p, int k, int want_id, int want_col)
     return model_colsrc(p->hw, k, &id, &col) && id == want_id && col == want_col;
 }
 
+/* fpga/docs/xc3s5000.md 8.11.21 (io build 35, XBAR = 1): RX SFD stamps 40 ns later, TX on the wire 20 ns after its
+ * stamp; io builds 30 / 31 (LOG M423 / M438): RX +20 / +40 ns against build 29. A measure-only follower at 0 ppm,
+ * X ns ahead of the leader, over a 5 us wire: offset X, delay 5000 ns when portd corrects the stamps */
+#define STAMP_X 3123456780ll
+static void stamp_case(const char *what, uint32_t rx_late, uint32_t tx_late, int xbar, int iobuild, double want_off,
+                       double want_delay)
+{
+    if (A.hw) { portd_stop(&A); A.hw->ops->close(A.hw); }
+    if (B.hw) { portd_stop(&B); B.hw->ops->close(B.hw); }
+    W = model_wire_new();
+    port_defaults(&A);
+    port_defaults(&B);
+    A.n = 0; snprintf(A.desk, sizeof(A.desk), "FOH"); A.mac[5] = 0x11;
+    B.n = 1; snprintf(B.desk, sizeof(B.desk), "MON"); B.mac[5] = 0x22;
+    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0 };
+    portd_opts_t ob = { 0, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 0, -2, 0, 0 };
+    CHECK(portd_start(&A, mk(0, 1, 0.0, 1760000000ull * 1000000000ull), &oa) == 0);
+    model_cfg_t m;
+    memset(&m, 0, sizeof(m));
+    m.id = 2; m.maxlat = 3;
+    m.port_base = 0x1000; m.clock_base = 0x1000; m.dclk_base = 0xFFFFFFFFu; m.cs2k_base = 0xFFFFFFFFu;
+    m.phy_fd = -1; m.wire = W; m.wire_side = 1; m.wire_delay_ns = 5000;
+    m.tod_start_ns = (uint64_t)(1760000000ll * 1000000000ll + STAMP_X);
+    m.rx_stamp_late_ns = rx_late; m.tx_wire_late_ns = tx_late; m.xbar = xbar; m.iobuild = iobuild;
+    CHECK(portd_start(&B, model_open(&m), &ob) == 0);
+    TEST(what);
+    run(12.0);
+    ptp_stats_t s;
+    ptp_get_stats(B.ptp, &s);
+    double off = s.offset_ns - (double)STAMP_X;
+    CHECKF(s.state == PTP_SLAVE && fabs(off - want_off) < 1.0 && fabs(s.delay_ns - want_delay) < 1.0,
+           "offset X %+.1f ns (want %+.0f), delay %.1f ns (want %.0f)", off, want_off, s.delay_ns, want_delay);
+}
+
+static void xbar_stamps(void)
+{
+    stamp_case("SFD stamps: no offsets (io build 29): offset and delay exact", 0, 0, 0, 29, 0.0, 5000.0);
+    stamp_case("SFD stamps: XBAR + io build 32 pipeline, its IDs hidden: off by (80 - 20) / 2, delay + (80 + 20) / 2", 80, 20,
+               0, 0, 30.0, 5050.0);
+    stamp_case("SFD stamps: io build 32 + XBAR (OXB1 at C0160, OFCP build 32 at C8900): RX -80, TX +20 ns: exact", 80, 20, 1,
+               32, 0.0, 5000.0);
+    stamp_case("SFD stamps: io build 32, no XBAR: RX -40 ns: exact", 40, 0, 0, 32, 0.0, 5000.0);
+    stamp_case("SFD stamps: io build 30: RX -20 ns: exact", 20, 0, 0, 30, 0.0, 5000.0);
+}
+
+/* desk b32 (2026-11-14): port 6 started as "--ptp follower" with no --owner / --steer followed a Dante leader 34 days
+ * ahead (ptp_offset_ns -2938998389492930, ptp_servo 0) and was never stepped: a measure-only follower by design */
+static const uint64_t TOD_L = 1760000000ull * 1000000000ull, DAYS34 = 2938998389492930ull;
+static int pair(const portd_opts_t *ob)
+{
+    if (A.hw) { portd_stop(&A); A.hw->ops->close(A.hw); }
+    if (B.hw) { portd_stop(&B); B.hw->ops->close(B.hw); }
+    W = model_wire_new();
+    port_defaults(&A);
+    port_defaults(&B);
+    A.n = 0; snprintf(A.desk, sizeof(A.desk), "DANTE"); A.mac[5] = 0x51;
+    B.n = 5; snprintf(B.desk, sizeof(B.desk), "OpenProSeries"); B.mac[5] = 0x06;
+    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0 };
+    CHECK(portd_start(&A, mk(0, 1, 0.0, TOD_L), &oa) == 0);
+    hw_t *h = mk(1, 2, 2.8, TOD_L - DAYS34);
+    if (portd_start(&B, h, ob)) { h->ops->close(h); B.hw = NULL; return -1; }
+    return 0;
+}
+
+static void follower_days_off(void)
+{
+    ptp_stats_t sb;
+    dclock_stats_t cb;
+    TEST("desk b32 line (--ptp follower, no --owner / --steer), leader 34 days ahead: measured, never stepped");
+    portd_opts_t desk = { 0, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 0, -2, 0, 0 };
+    CHECK(pair(&desk) == 0);
+    run(30.0);
+    ptp_get_stats(B.ptp, &sb);
+    dclock_get_stats(B.clk, &cb);
+    CHECKF(sb.state == PTP_SLAVE && sb.offset_ns < -2.9e15 && sb.servo_state == 0 && cb.steps == 0,
+           "%s offset %.0f servo %d steps %llu", ptp_state_name(sb.state), sb.offset_ns, sb.servo_state,
+           (unsigned long long)cb.steps);
+
+    TEST("--steer without --owner is refused (the servo's steps would be dropped: dclock_step needs the owner)");
+    portd_opts_t noown = { 0, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0 };
+    CHECK(pair(&noown) != 0);
+
+    TEST("the fix on the desk (--clock-port 6 --owner --steer), leader 34 days ahead: steps and locks within 10 s");
+    portd_opts_t own = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0 };
+    CHECK(pair(&own) == 0);
+    run(10.0);
+    ptp_get_stats(B.ptp, &sb);
+    dclock_get_stats(B.clk, &cb);
+    CHECKF(sb.state == PTP_SLAVE && fabs(sb.offset_ns) < 1000.0 && cb.steps >= 1 && cb.locked,
+           "offset %.0f ns steps %llu locked %d", sb.offset_ns, (unsigned long long)cb.steps, cb.locked);
+    char out[256] = "";
+    ctl_exec(&B, "ptp follower steer", out, sizeof(out));
+    CHECKF(!strcmp(out, "ok\n"), "owner: ctl \"ptp follower steer\" answered \"%s\"", out);
+
+    TEST("ctl \"ptp follower steer\" on a non-owner is refused, never a silent no-op");
+    CHECK(pair(&desk) == 0);
+    out[0] = 0;
+    ctl_exec(&B, "ptp follower steer", out, sizeof(out));
+    run(10.0);
+    ptp_get_stats(B.ptp, &sb);
+    dclock_get_stats(B.clk, &cb);
+    CHECKF(!strncmp(out, "err", 3) && sb.servo_state == 0 && cb.steps == 0, "reply \"%s\" servo %d steps %llu", out,
+           sb.servo_state, (unsigned long long)cb.steps);
+}
+
 int main(void)
 {
     g_log_level = getenv("V") ? LOG_DEBUG : LOG_WARN;
@@ -244,5 +349,7 @@ int main(void)
     CHECKF(receiving(&A,0,8) == 8, "48 kHz reverse: %d of 8",receiving(&A,0,8));
     CHECK(colsrc_ok(&A,0,2,0));
     latency_beyond_buffer();
+    xbar_stamps();
+    follower_days_off();
     return t_done("test_inproc");
 }

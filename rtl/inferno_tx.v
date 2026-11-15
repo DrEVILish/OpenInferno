@@ -46,7 +46,7 @@
 `timescale 1ns / 1ps
 `default_nettype none
 module inferno_tx #(
-    parameter MAX_CH  = 64,            // port columns (a power of two, 2..64)
+    parameter MAX_CH  = 64,            // port columns (any even 2..64)
     parameter NFLOW   = 16,
     parameter MAXFCH  = 32,            // channels per flow (<= 32)
     parameter MAX_FPP = 32,            // frames per packet (<= 32)
@@ -92,6 +92,11 @@ module inferno_tx #(
     localparam RW  = `CLOG2(NR);
     localparam CW  = `CLOG2(MAX_CH);
     localparam HDR = 51;               // 42 Ethernet / IPv4 / UDP + 9 media header
+    // MAX_CH must be even 2..64: odd breaks the 96 kHz half-column pairing (elaboration fails on the missing module)
+    generate if (MAX_CH < 2 || MAX_CH > 64 || MAX_CH % 2) begin : g_bad_max_ch
+        MAX_CH_must_be_even_2_to_64 bad_max_ch ();
+    end endgenerate
+    wire hi = media_fs > 17'd50000;    // 96 kHz: only the first MAX_CH / 2 columns carry audio
 
     // ---- flow table (block RAM, reads registered): port A is the host's (the write address while writing, else the
     // read address; aoip_port gives both the same bus address), port B the sender's
@@ -156,7 +161,8 @@ module inferno_tx #(
     assign running = run_v;
 
     // ---- the sample ring: NR frames x MAX_CH; a frame written before its strobe belongs to media time media_ts + 1
-    reg [23:0] ring [0:NR*MAX_CH-1];
+    // shortcut: stride padded to 2^CW, use slot*MAX_CH addressing if a MAXLAT>=2 build runs short of RAMB16
+    reg [23:0] ring [0:NR*(1<<CW)-1];
     wire [RW-1:0] wslot = media_ts[RW-1:0] + 1'b1;
     always @(posedge clk) if (in_we && in_ch < MAX_CH) ring[{wslot, in_ch[CW-1:0]}] <= in_sample;
 
@@ -314,7 +320,7 @@ module inferno_tx #(
     // the sample under the payload pointer (one clock after the pointer moves: the MAC pace limit in the header)
     wire [31:0]   mapw = cmapm[rc[4:2]];
     wire [7:0]    mapb = (rc[1:0] == 2'd0) ? mapw[7:0] : (rc[1:0] == 2'd1) ? mapw[15:8] : (rc[1:0] == 2'd2) ? mapw[23:16] : mapw[31:24];
-    wire          mute = mapb[7] || mapb[5:0] >= MAX_CH || rc >= MAXFCH;
+    wire          mute = mapb[7] || mapb[6] || (mapb[5:0] >= MAX_CH / 2 && (hi || mapb[5:0] >= MAX_CH)) || rc >= MAXFCH;
     wire [RW-1:0] rslot = p_slot + rf;
     reg  [23:0]   smp;
     reg           smute;

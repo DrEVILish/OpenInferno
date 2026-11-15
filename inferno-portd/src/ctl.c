@@ -2,7 +2,7 @@
  * one-line text commands and reads its state. Protocol (each command answers lines, then "ok" or "err <why>"):
  *   deskname <NAME>            the device becomes "<NAME>-<n>"
  *   rate 48000|96000           latency 0.5|1|2|5 (ms; or the mode 0..3 as "mode <m>")
- *   channels <1..64>           txname <k> <name>          rxname <k> <name>
+ *   channels <1..CAPS columns> (half at 96 kHz)   txname <k> <name>   rxname <k> <name>
  *   sub <k> <txchannel>@<device>   unsub <k>
  *   mcast <id> <ch,ch,...>     mcastdel <id>
  *   ptp off|auto|leader|follower [steer]    clock owner|none
@@ -159,7 +159,9 @@ int ctl_exec(port_t *p, const char *line, char *out, size_t sz)
     }
     if (!strcmp(cmd, "ptp") && n >= 2 && p->ptp) {
         int role = !strcmp(a, "off") ? PTP_ROLE_OFF : !strcmp(a, "leader") ? PTP_ROLE_LEADER : !strcmp(a, "follower") ? PTP_ROLE_FOLLOWER : PTP_ROLE_AUTO;
-        ptp_set_role(p->ptp, role, n >= 3 && !strcmp(b, "steer"));
+        int steer = n >= 3 && !strcmp(b, "steer");
+        if (steer && !(p->clk && dclock_owner(p->clk))) { outf(out, sz, "err steer needs the desk clock owner (--owner)\n"); return -1; }
+        ptp_set_role(p->ptp, role, steer);
         outf(out, sz, "ok\n");
         return 0;
     }

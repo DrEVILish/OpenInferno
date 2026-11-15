@@ -343,7 +343,7 @@ static int rx_claim(model_t *m, const uint8_t *p, int len)
         if ((int32_t)(play - (t + (uint32_t)frames - 1)) > 0) { m->rx_late++; return 1; }
         if ((int32_t)((t + (uint32_t)frames) - (play + (uint32_t)nf)) > 0) { m->rx_early++; return 1; }
         m->rx_ok++;
-        if ((int32_t)(play - t) > 0) m->rx_late_part += play - t;   /* frames before play: played already */
+        if ((int32_t)(play - t) >= 0) m->rx_late_part += play - t + 1; /* synchronous model: through play inclusive */
         m->st_rxmedia++;
         uint32_t *st = &m->rx_st[16 * f];
         st[0] = get32(ip + 12);

@@ -362,7 +362,8 @@ static void test_rx_late_part(void)
     tbl_write(q.hw, TBL_RX(15, 1), cfg, 3);
     tbl_write(q.hw, TBL_RX(15, 0), &w0, 1);
     /* virtual time stands still: the play point is the media clock now minus the offset in use */
-    uint32_t play = port_rd(q.hw, AOIP_MEDIA_TS) - (port_rd(q.hw, INF_LAT_STATUS) & 0x7FF), t = play - 3;
+    uint32_t play = port_rd(q.hw, AOIP_MEDIA_TS) - (port_rd(q.hw, INF_LAT_STATUS) & 0x7FF), t = play - 2;
+    CHECK(port_rd(q.hw, INF_RX_LATE_PART) == 0);
     uint8_t f[99];
     memset(f, 0, sizeof(f));
     f[12] = 0x08; f[14] = 0x45; put16(f + 16, 85); f[22] = 64; f[23] = 17; put32(f + 26, IP4(169, 254, 9, 9));
@@ -370,10 +371,17 @@ static void test_rx_late_part(void)
     put32(f + 47, t);   /* seconds 0, sub = t: the packet time T = t */
     port_wr(a, CQ_CTRL, 1);
     CHECK(pktq_send(a, f, sizeof(f), 0, 0) == 0);
+    q.hw->ops->service(q.hw);
     char out[8192];
     CHECK(ctl_exec(&q, "status", out, sizeof(out)) == 0);
     CHECKF(strstr(out, "hw_rx_ok=1\n") && strstr(out, "hw_rx_late=0\n") && strstr(out, "hw_rx_late_part=3\n"), "%s",
            strstr(out, "hw_rx_ok=") ? strstr(out, "hw_rx_ok=") : out);
+    CHECK(port_rd(q.hw, INF_RX_LATE_PART) == 3);
+    port_wr(q.hw, INF_RX_LATE_PART, 0xFFFFFFFFu);
+    CHECK(port_rd(q.hw, INF_RX_LATE_PART) == 3); /* RO; reads do not clear */
+    CHECK(pktq_send(a, f, sizeof(f), 0, 0) == 0);
+    q.hw->ops->service(q.hw);
+    CHECK(port_rd(q.hw, INF_RX_LATE_PART) == 6);
     portd_stop(&q); q.hw->ops->close(q.hw); a->ops->close(a);
 }
 

@@ -60,7 +60,9 @@ module tb_infcap;
     localparam [5:0]  FPPL = (FPP_AUTO < inferno_mtu_fpp(NL * 3)) ? FPP_AUTO : inferno_mtu_fpp(NL * 3);
     localparam integer STARTL = FPPL - (T064 % FPPL);
     localparam integer FRAMES = OFFSET + STARTL + NCHECK + FPPL + 4;
-`ifdef GOLDEN
+`ifdef JIT_US
+    localparam PROBE = 0; // preserve the jitter workload; invalid-column probes run in the normal cases
+`elsif GOLDEN
     localparam PROBE = 0;                                // the golden packets' IPv4 IDs leave no room for the probe
 `else
     localparam PROBE = 1;
@@ -297,7 +299,8 @@ module tb_infcap;
             if (f == START + 2 * FPP + 64) measuring = 0;                  // 64 frames' worth of packets
             repeat (PERIOD - CH - 2) @(posedge clk);
         end
-        repeat (200) @(posedge clk);
+        // Drain the switch and accepted commits with the play point frozen before reading counters.
+        repeat (50000) @(posedge clk);
         // ---- counters and status
         lat_max = 0;
         for (fl = 0; fl < NFL; fl = fl + 1) begin

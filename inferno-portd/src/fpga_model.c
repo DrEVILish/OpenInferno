@@ -35,6 +35,10 @@
 #define CQ_ND      16
 #define CQ_RXBYTES 8192
 #define CQ_TXWORDS 512
+#define TX_PENDING 64
+/* Stable Linux UAPI: net_tstamp.h and errqueue.h; no kernel headers in AMU sysroot. */
+#define TX_FLAGS ((1 << 1) | (1 << 4) | (1 << 7))
+struct tx_error { uint32_t error; uint8_t origin, type, code, pad; uint32_t info, id; };
 
 typedef struct {
     uint8_t  d[1520];
@@ -95,6 +99,9 @@ typedef struct {
     uint32_t cq_tx_frames, cq_tx_rejects, cq_rx_frames, cq_rx_over, cq_rx_filt;
     pend_t   pend[64];
     int      pend_head, pend_n;
+    uint32_t tx_id;
+    int tx_broken;
+    struct { uint32_t id, tag; uint64_t sent; int len; uint8_t frame[1514]; } tx_pending[TX_PENDING];
     /* the desk audio clock and fs_phase */
     double   desk_pos;             /* desk frames (samples), not wrapped */
     double   desk_ratio_rel;       /* CS2000 ratio / nominal */
@@ -221,7 +228,7 @@ static void tx_restart(model_t *m, int f)
     else m->txf[f].next_t = now + 1;
 }
 
-static void phy_send(model_t *m, const uint8_t *frame, int len)
+static void phy_send(model_t *m, const uint8_t *frame, int len, int tag)
 {
     if (m->c.wire) {
         int to = !m->c.wire_side;
@@ -236,7 +243,26 @@ static void phy_send(model_t *m, const uint8_t *frame, int len)
     }
     if (m->c.phy_fd < 0) return;
     if (m->c.phy_packet) {
-        if (send(m->c.phy_fd, frame, (size_t)len, MSG_DONTWAIT) < 0 && errno != EAGAIN) LOGD("model PHY send: %d", errno);
+        ssize_t n = send(m->c.phy_fd, frame, (size_t)len, MSG_DONTWAIT);
+        if (n != len) {
+            /* EAGAIN precedes skb_setup_tx_timestamp/ID allocation in packet_snd.
+             * Other failures may follow it: fail closed until the socket is reopened. */
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                m->tx_broken = 1;
+                LOGE("model PHY TX timestamp ID state lost: %d (reopen backend)", errno);
+            }
+            return;
+        }
+        uint32_t id = m->tx_id++;
+        if (tag >= 0 && !m->tx_broken) {
+            for (int i = 0; i < TX_PENDING; i++) {
+                if (m->tx_pending[i].len) continue;
+                m->tx_pending[i].id = id; m->tx_pending[i].tag = (uint32_t)tag;
+                m->tx_pending[i].sent = g_now_ns(); m->tx_pending[i].len = len;
+                memcpy(m->tx_pending[i].frame, frame, (size_t)len);
+                break; /* full: omit timestamp, never fabricate one */
+            }
+        }
     } else {
         uint8_t b[1530];
         uint64_t t = g_now_ns();
@@ -298,7 +324,7 @@ static void tx_packet(model_t *m, int f, uint32_t t)
             if (bps == 4) { put32(s, v << 8); s += 4; }
             else { s[0] = (uint8_t)(v >> 16); s[1] = (uint8_t)(v >> 8); s[2] = (uint8_t)v; s += 3; }
         }
-    phy_send(m, p, 42 + 9 + pl);
+    phy_send(m, p, 42 + 9 + pl, -1);
     m->tx_packets++;
     m->st_txmedia++;
 }
@@ -439,6 +465,62 @@ static int rx_stamp(model_t *m, struct msghdr *mh, uint64_t *at)
                          an, rn, bn, m->stamp_epoch, at);
 }
 
+/* Errorqueue processing shares the RX clock bracket and epoch rejection. */
+static void tx_poll(model_t *m)
+{
+    uint64_t now = g_now_ns();
+    for (int i = 0; i < TX_PENDING; i++)
+        if (m->tx_pending[i].len && (now < m->tx_pending[i].sent ||
+            now - m->tx_pending[i].sent > 100000000)) m->tx_pending[i].len = 0;
+    for (int k = 0; k < 256; k++) {
+        uint8_t frame[1600];
+        union { struct cmsghdr align; char bytes[256]; } control;
+        struct iovec io = {frame, sizeof(frame)};
+        struct msghdr mh = {0};
+        mh.msg_iov = &io; mh.msg_iovlen = 1;
+        mh.msg_control = control.bytes; mh.msg_controllen = sizeof(control.bytes);
+        ssize_t n = recvmsg(m->c.phy_fd, &mh, MSG_ERRQUEUE | MSG_DONTWAIT);
+        if (n < 0) break;
+        if (mh.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) continue;
+        struct tx_error err = {0};
+        struct timespec ts[3] = {{0}};
+        int errors = 0, times = 0, bad = 0;
+        for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh); c; c = CMSG_NXTHDR(&mh, c)) {
+            if (c->cmsg_len < CMSG_LEN(0) || c->cmsg_len >
+                (size_t)((char *)mh.msg_control + mh.msg_controllen - (char *)c)) { bad = 1; break; }
+            if (c->cmsg_level == SOL_PACKET && c->cmsg_type == 16) {
+                if (errors++ || c->cmsg_len < CMSG_LEN(sizeof(err))) { bad = 1; break; }
+                memcpy(&err, CMSG_DATA(c), sizeof(err));
+            }
+            if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_TIMESTAMPING) {
+                if (times++ || c->cmsg_len != CMSG_LEN(sizeof(ts))) { bad = 1; break; }
+                memcpy(ts, CMSG_DATA(c), sizeof(ts));
+            }
+        }
+        if (bad || errors != 1 || times != 1 || err.error != ENOMSG ||
+            err.origin != 4 || err.type || err.code || err.info != 0 || m->tx_broken) continue;
+        for (int i = 0; i < TX_PENDING; i++) {
+            if (!m->tx_pending[i].len || m->tx_pending[i].id != err.id) continue;
+            int len = m->tx_pending[i].len;
+            m->tx_pending[i].len = 0; /* duplicate records cannot publish twice */
+            if (n != len || memcmp(frame, m->tx_pending[i].frame, (size_t)len)) break;
+            /* Present the validated software time to the common RX conversion helper. */
+            union { struct cmsghdr align; char bytes[CMSG_SPACE(sizeof(struct timespec))]; } cb;
+            struct msghdr stamp = {0};
+            stamp.msg_control = cb.bytes; stamp.msg_controllen = sizeof(cb.bytes);
+            struct cmsghdr *c = CMSG_FIRSTHDR(&stamp);
+            c->cmsg_level = SOL_SOCKET; c->cmsg_type = SCM_TIMESTAMPNS;
+            c->cmsg_len = CMSG_LEN(sizeof(struct timespec));
+            memcpy(CMSG_DATA(c), &ts[0], sizeof(ts[0]));
+            uint64_t at;
+            if (!rx_stamp(m, &stamp, &at) || m->ts_valid) break;
+            tod_at(m, at, &m->ts_sec, &m->ts_ns);
+            m->ts_tag = m->tx_pending[i].tag; m->ts_valid = 1;
+            break;
+        }
+    }
+}
+
 static void phy_poll(model_t *m)
 {
     uint64_t now = g_now_ns();
@@ -460,6 +542,7 @@ static void phy_poll(model_t *m)
         return;
     }
     if (m->c.phy_fd < 0) return;
+    if (m->c.phy_packet) tx_poll(m);
     for (int k = 0; k < 256; k++) {
         uint8_t b[1600];
         if (m->c.phy_packet) {
@@ -632,10 +715,10 @@ static void cq_wr(model_t *m, uint32_t o, uint32_t v)
         for (int i = 0; i < len; i++) f[i] = (uint8_t)(m->txw[i / 4] >> (24 - 8 * (i % 4)));
         m->txw_n = 0;
         if (!(m->cq_ctrl & 1)) break;
-        phy_send(m, f, len);
+        phy_send(m, f, len, (v & 0x8000) ? (int)((v >> 16) & 0xFF) : -1);
         m->cq_tx_frames++;
         m->st_txcpu++;
-        if (v & 0x8000) {
+        if ((v & 0x8000) && !m->c.phy_packet) {
             tod_at(m, g_now_ns(), &m->ts_sec, &m->ts_ns);
             m->ts_valid = 1;
             m->ts_tag = (v >> 16) & 0xFF;
@@ -865,6 +948,11 @@ int model_packet_socket(const char *ifname)
         LOGE("model PHY requires SO_TIMESTAMPNS: %d", errno);
         close(fd);
         return -1;
+    }
+    int txflags = TX_FLAGS;
+    if (setsockopt(fd, SOL_SOCKET, SO_TIMESTAMPING, &txflags, sizeof(txflags)) < 0) {
+        LOGE("model PHY requires SOFTWARE TX timestamping with OPT_ID: %d", errno);
+        close(fd); return -1;
     }
     int rcv = 4 << 20;
     setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcv, sizeof(rcv));

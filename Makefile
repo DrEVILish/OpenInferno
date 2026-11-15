@@ -1,6 +1,7 @@
 # Standalone Inferno media path and control-plane checks.
 .DEFAULT_GOAL := check
 .DELETE_ON_ERROR:
+.NOTPARALLEL: check
 PY ?= python3 -I
 TASKSET ?= nice -n 10
 B := build

@@ -16,7 +16,7 @@ static int test_clock(clockid_t id, struct timespec *t)
 }
 static ssize_t test_recvmsg(int fd, struct msghdr *mh, int flags)
 {
-    (void)fd; (void)flags;
+    (void)fd; if (flags & MSG_ERRQUEUE) return -1;
     if (reads++) return -1;
     memset(mh->msg_name, 0, sizeof(struct sockaddr_ll));
     memset(mh->msg_iov[0].iov_base, 0xff, 60);

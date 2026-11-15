@@ -45,3 +45,7 @@ VM evidence: /root/q59-logs/pr3-rx-final-repeat-{check,e2e}.log,
 /root/q59-logs/pr3-rx-final2-amu.log. An earlier full-check attempt hit concurrent
 recursive compilation of fpga_model.o; its failed linker run is preserved as
 pr3-rx-final-check.log. Final-repeat uses the already built object.
+
+Subsequent scoped TX integration and newer validation are recorded in
+[pr3-timestamp-tx.md](pr3-timestamp-tx.md); the failures and missing TX work above
+are the historical RX-only result, not the latest combined timestamp result.

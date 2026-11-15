@@ -19,6 +19,7 @@
 #define PTP1_EVENT   319
 #define PTP1_GENERAL 320
 
+#define PTP_COLD_STEP_NS 100000   /* a follower's first Sync steps the clock when it is this far off */
 enum { PTP1_SYNC = 0, PTP1_DELAY_REQ = 1, PTP1_FOLLOW_UP = 2, PTP1_DELAY_RESP = 3, PTP1_MGMT = 4 };
 #define PTP1_FLAG_ASSIST 0x08   /* two-step: a Follow_Up carries the precise origin */
 

@@ -215,6 +215,7 @@ struct ptp {
     int      have_delay;
     servo_t  servo;
     uint64_t good_since;        /* the run of good samples (locked, |offset| < c.ready_ns) began; 0: none */
+    int      cold_done;         /* the first Sync followed since the start was seen (its step: sample) */
     /* leader */
     uint16_t sync_pending_seq;
     int      sync_pending;
@@ -393,6 +394,19 @@ static void sample(ptp_t *p)
 {
     if (!p->t1_ok || !p->t2_ok) return;
     int64_t ms = ts_diff(p->t2, p->t1);
+    if (!p->have_delay && !p->cold_done && p->c.steer && p->clk) {
+        /* cold start: the first Sync followed steps on t2 - t1 alone, no Delay_Resp needed (the delay is us). Once per
+         * start: a re-acquire keeps the servo's rules (the design note's PR 3 moves those) */
+        p->cold_done = 1;
+        if (llabs(ms) > PTP_COLD_STEP_NS) {
+            LOGI("PTP: first Sync %lld ns off, stepping", (long long)ms);
+            dclock_step(p->clk, -ms);
+            p->st.offset_ns = (double)ms;
+            p->st.servo_state = SERVO_JUMP;
+            p->t1 = p->t2 = 0;
+            p->t3_ok = 0;
+        }
+    }
     if (p->have_delay) {
         double off = (double)ms - p->delay_ns;
         p->st.offset_ns = off;

@@ -24,6 +24,7 @@ static uint64_t vt = 5000000000ull;
 static uint64_t vnow(void) { return vt; }
 
 static port_t A, B;
+static int64_t b_tod_off = 3123456789;   /* B's time of day at start, against A's */
 static double desk_ppm = 40.0, acq_ppm_s;   /* B's CS2000 reference error (B tracks -desk_ppm), its acquisition glide */
 static model_wire_t *W;
 
@@ -75,7 +76,7 @@ static void setup(int fail_leader, int8_t log_sync)
     portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0, 0 };
     portd_opts_t ob = { 1, 1, 1, fail_leader, R0, PTP_ROLE_FOLLOWER, 1, log_sync, 0, acq_ppm_s, 0 };
     CHECK(portd_start(&A, mk(0, 1, 0.0, 0.0, 1760000000ull * 1000000000ull, 0), &oa) == 0);
-    CHECK(portd_start(&B, mk(1, 2, 50.0, desk_ppm, 1760000003ull * 1000000000ull + 123456789ull, 1), &ob) == 0);
+    CHECK(portd_start(&B, mk(1, 2, 50.0, desk_ppm, (uint64_t)(1760000000ll * 1000000000ll + b_tod_off), 1), &ob) == 0);
     ns = 0;
 }
 
@@ -358,6 +359,44 @@ static void test_acquisition(double dppm, double acq, double max_freq_s, double 
     desk_ppm = 40.0; acq_ppm_s = 0;
 }
 
+/* Ethernet + IPv4 (no options) + UDP to the PTP general port 320, the PTPv1 control byte at 32: a Delay_Resp */
+static int drop_dresp(const uint8_t *f, int len)
+{
+    return len > 74 && f[12] == 0x08 && f[13] == 0x00 && f[23] == 17 && ((f[36] << 8) | f[37]) == 320 && f[74] == PTP1_DELAY_RESP;
+}
+
+/* clock design note 2026-11-14 section 3 (PR 2): a follower days off steps on its first Sync, from t2 - t1 alone (the
+ * path delay is us), and never waits for a Delay_Resp to do it */
+static void test_cold_start(double days)
+{
+    char name[160];
+    snprintf(name, sizeof(name), "cold start, the leader %+.0f days ahead, Delay_Resp never answered: one step from Sync alone, then locked once delays arrive", days);
+    TEST(name);
+    b_tod_off = -(int64_t)llround(days * 86400e9);
+    setup(0, -2);
+    model_wire_drop(W, drop_dresp);
+    run(5.0);
+    ptp_stats_t s;
+    dclock_stats_t c;
+    ptp_get_stats(B.ptp, &s);
+    dclock_get_stats(B.clk, &c);
+    uint32_t as, an, bs, bn;
+    dclock_now(A.clk, &as, &an);
+    dclock_now(B.clk, &bs, &bn);
+    double tod = ((double)bs - (double)as) * 1e9 + ((double)bn - (double)an);
+    CHECKF(s.state == PTP_SLAVE && s.dresp_rx == 0 && c.steps == 1 && fabs(tod) < 1e6,
+           "%s dresp_rx %llu steps %llu B - A %.0f ns", ptp_state_name(s.state), (unsigned long long)s.dresp_rx,
+           (unsigned long long)c.steps, tod);
+    model_wire_drop(W, NULL);
+    run(20.0);
+    ptp_get_stats(B.ptp, &s);
+    dclock_get_stats(B.clk, &c);
+    CHECKF(s.dresp_rx > 0 && c.steps == 1 && fabs(s.offset_ns) < 20000.0 && c.locked, "dresp_rx %llu steps %llu offset %.0f ns locked %d",
+           (unsigned long long)s.dresp_rx, (unsigned long long)c.steps, s.offset_ns, c.locked);
+    teardown();
+    b_tod_off = 3123456789;
+}
+
 int main(void)
 {
     g_log_level = getenv("V") ? LOG_DEBUG : LOG_WARN;
@@ -368,6 +407,8 @@ int main(void)
     test_go_leader();
     test_clockfail_runtime();
     test_rate_change_stale();
+    test_cold_start(34.0);
+    test_cold_start(-34.0);
     /* the PRO1's default: the glide at the loop's 5 ppm/s (the phase moves with it), then locked */
     test_acquisition(50.0, 0, 12.0, 30.0, 13.0, 12);
     test_acquisition(-50.0, 0, 12.0, 30.0, 13.0, 12);

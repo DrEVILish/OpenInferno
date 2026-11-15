@@ -25,6 +25,7 @@ struct hw {
     uint32_t dclk_base;      /* fs_phase.v block; 0xFFFFFFFF = none */
     uint32_t cs2k_base;      /* CS2000 command engine; 0xFFFFFFFF = none */
     int      sw_stamps;      /* SFD stamps are software (kernel receive / host send times): tens of us of jitter */
+    int32_t  rx_stamp_ns, tx_stamp_ns;   /* added to the RX / TX SFD stamps (pktq_init: the io build's pipeline) */
     void    *priv;
 };
 

@@ -102,7 +102,7 @@ int main(int argc, char **argv)
     static port_t P;
     port_t *p = &P;
     port_defaults(p);
-    portd_opts_t o = { 0, 0, 0, 0, 0, 1, 0, -2, 0, 0 };
+    portd_opts_t o = { 0, 0, 0, 0, 0, 1, 0, -2, 0, 0, 0 };
     int portn = 1, clock_port = 1, model = 0, model_id = 1;
     uint64_t mem_base = 0xF2000000ull, model_tod = 0;
     uint32_t mem_size = 0x100000, stride = 0x1000, dclk = 0xFFFFFFFFu, cs2k = 0xFFFFFFFFu;

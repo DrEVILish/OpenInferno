@@ -402,7 +402,7 @@ int main(void)
     P.n = 1;
     snprintf(P.desk, sizeof(P.desk), "MON");
     P.cfg_ip = IP4(169, 254, 10, 2);
-    portd_opts_t o = { 1, 0, 0, 0, 0, 0, 0, -2, 0, 0 };
+    portd_opts_t o = { 1, 0, 0, 0, 0, 0, 0, -2, 0, 0, 0 };
     CHECK(portd_start(&P, mkmodel(0), &o) == 0);
     CHECK(!strcmp(P.name, "MON-2") && P.devid[3] == 0xFF && P.devid[4] == 0xFE);
     CHECK(P.advertised);

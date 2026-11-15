@@ -15,6 +15,10 @@ static void on_load(void *ctx) { txflows_reanchor((port_t *)ctx); }
 int portd_start(port_t *p, hw_t *hw, const portd_opts_t *o)
 {
     p->hw = hw;
+    if (o->ptp_steer && !o->clock_owner) {   /* dclock_step / write_incs act only for the owner: the steps would vanish */
+        LOGE("--steer needs --owner (only the desk clock owner can step or steer the clock)");
+        return -1;
+    }
     uint32_t id = port_rd(hw, AOIP_ID), iid = port_rd(hw, INF_ID);
     if (id != AOIP_ID_VALUE || iid != INF_ID_VALUE) {
         LOGE("port block: IDs 0x%08x / 0x%08x (want OAP2 / OIN2): not an Inferno-capable port", id, iid);

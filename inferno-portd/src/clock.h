@@ -65,6 +65,10 @@ double aloop_sample(aloop_t *a, double phase, uint64_t t_ns);   /* returns the c
 #define DCLK_SLEW_PPM_S 5.0
 #define DCLK_PERIOD_NS  125000000ull
 #define CS2K_STEP_PPM   (DCLK_SLEW_PPM_S * 0.125)
+/* a clock leader by choice (not GO LEADER) without an audio loop takes the NCO from the frequency it held (the one it
+ * followed: Sync to Dante -> Desk leads) back to nominal at this rate (clock design note 2026-11-14 section 6; the
+ * --trim-ppm value once PR 8 exists) */
+#define DCLK_LEAD_GLIDE_PPM_S 1.0
 #define DCLK_SETTLE_NS  2000000000ull   /* a follower's audio loop starts after the PTP has held its lock this long */
 #define DCLK_ACQ_NS     250000000ull    /* the acquisition's measurement: 1 / 1042 sample in 0.25 s = 0.08 ppm at 48 kHz */
 /* a first measurement up to DCLK_ACQ_MIN_PPM is left to the phase loop: 2 s into its lock the PTP may still move the

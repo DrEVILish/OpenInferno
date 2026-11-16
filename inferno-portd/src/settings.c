@@ -23,6 +23,7 @@ int settings_save(port_t *p)
         if (strcmp(p->rxname[k], d)) fprintf(f, "rxname %d %s\n", k + 1, p->rxname[k]);
         if (p->sub[k].active) fprintf(f, "sub %d %s@%s\n", k + 1, p->sub[k].txch, p->sub[k].txhost);
     }
+    if (p->clockmode) fprintf(f, "clockmode %s\n", p->clockmode == CLOCKMODE_FOLLOW ? "follow" : "leader");
     for (int i = 0; i < NTXF; i++) {
         const txflow_t *t = &p->tx[i];
         if (!t->used || !t->multicast) continue;
@@ -52,6 +53,10 @@ int settings_apply_line(port_t *p, const char *line, int at_start)
     } else if (!strcmp(key, "latency") && sscanf(line, "%*s %d", &k) == 1) {
         if (at_start) p->lat_mode = k & 3;
         else return port_set_latency(p, k);
+    } else if (!strcmp(key, "clockmode") && sscanf(line, "%*s %95s", a) == 1) {
+        int m = !strcmp(a, "leader") ? CLOCKMODE_LEADER : !strcmp(a, "follow") ? CLOCKMODE_FOLLOW : 0;
+        if (!m) return -1;
+        p->clockmode = m;   /* the state file only: applied once the PTP is up (portd_start); ctl_exec runs the live one */
     } else if (!strcmp(key, "channels") && sscanf(line, "%*s %d", &k) == 1) {
         if (k >= 1 && k <= MAX_CH) p->channels = k;
     } else if (!strcmp(key, "txname") && sscanf(line, "%*s %d %95[^\n]", &k, a) == 2) {

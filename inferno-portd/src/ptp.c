@@ -584,6 +584,8 @@ void ptp_set_role(ptp_t *p, int role, int steer)
     p->start = g_now();
 }
 
+int ptp_get_role(const ptp_t *p, int *steer) { *steer = p->c.steer; return p->c.role; }
+
 static int qualified(const ptp_t *p, const fm_t *f, uint64_t now)
 {
     uint64_t win = 4 * MAX(sync_ns(p), 1000000000ull);   /* 4 intervals of the slowest plausible Sync rate */

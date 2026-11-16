@@ -7,6 +7,8 @@
  *   mcast <id> <ch,ch,...>     mcastdel <id>
  *   ptp off|auto|leader|follower [steer]    clock owner|none
  *   clockfail holdover|leader  the desk clock on source loss (GO LEADER: also "master", "internal"); at once if lost now
+ *   clockmode leader|follow    leader - Desk leads, follow - Sync to Dante: the live clock mode switch (the desk clock
+ *                              owner only), saved
  *   status                     key=value lines            quit
  * Part of OpenProSeries inferno-portd. Licence: GPL-3.0-or-later.
  */
@@ -173,6 +175,13 @@ int ctl_exec(port_t *p, const char *line, char *out, size_t sz)
         int lead = !strcmp(a, "leader") || !strcmp(a, "master") || !strcmp(a, "internal");
         if (!lead && strcmp(a, "holdover")) { outf(out, sz, "err holdover or leader\n"); return -1; }
         dclock_set_fail(p->clk, lead);
+        outf(out, sz, "ok\n");
+        return 0;
+    }
+    if (!strcmp(cmd, "clockmode") && n >= 2) {
+        int m = !strcmp(a, "leader") ? CLOCKMODE_LEADER : !strcmp(a, "follow") ? CLOCKMODE_FOLLOW : 0;
+        if (!m) { outf(out, sz, "err leader or follow\n"); return -1; }
+        if (port_set_clockmode(p, m)) { outf(out, sz, "err clockmode needs the desk clock owner (--owner)\n"); return -1; }
         outf(out, sz, "ok\n");
         return 0;
     }

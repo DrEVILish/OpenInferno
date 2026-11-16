@@ -80,6 +80,7 @@ int portd_start(port_t *p, hw_t *hw, const portd_opts_t *o)
          o->ready_us ? "--ready-us" : hw->sw_stamps ? "software stamps" : "hardware stamps");
     p->ptp = ptp_new(p->net, p->clk, p->mac, &pc);
     ptp_on_mute(p->ptp, clock_mute, p);
+    if (p->clockmode && port_set_clockmode(p, p->clockmode)) LOGW("saved clockmode needs --owner: kept the launch PTP role");
     port_apply_hw(p);
     if (net_ready(p->net)) {
         info_init(p);

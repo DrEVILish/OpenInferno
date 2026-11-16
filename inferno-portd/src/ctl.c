@@ -58,6 +58,8 @@ static void status(port_t *p, char *o, size_t sz)
              s.leader_uuid[4], s.leader_uuid[5]);
     }
     outf(o, sz, "clock_ready=%d\n", !p->ptp || p->clock_ready);
+    /* the desk clock owner: leader - Desk leads, follow - Sync to Dante (ctl clockmode); the mode in force, not the saved word */
+    if (p->ptp && p->clk && dclock_owner(p->clk)) outf(o, sz, "clockmode=%s\n", port_clockmode(p) == CLOCKMODE_FOLLOW ? "follow" : "leader");
     if (p->clk) {
         dclock_stats_t c;
         dclock_get_stats(p->clk, &c);

@@ -565,7 +565,8 @@ advertised `nchan=16` (option `--nchan`), `fpp=32,2`, `latency_ns` = the port's 
   (`AMU_QEMU`), then `AMU_CHECK` (a static-binary checker script) when set. `-r` only fakes the kernel version (qemu
   still runs the glibc `ppc` build, so it cannot catch this): this is not a real-AMU run. The source must not include
   `<linux/...>` headers (the musl sysroot has none; `check-unit` greps for them).
-- `status` keys include `clock_fail=`, `cs2k_ppm=` and `ptp_leader=` (was `ptp_master=`), and `hw_rx_late_part=`
+- `status` keys include `clockmode=leader|follow` (the desk clock owner only: the clock mode in force, Desk leads or
+  Sync to Dante, beside `clock_ready=`), `clock_fail=`, `cs2k_ppm=` and `ptp_leader=` (was `ptp_master=`), and `hw_rx_late_part=`
   (`RX_LATE_PART`, beside `hw_rx_late=` / `hw_rx_early=`).
 
 ## 10. Milestones

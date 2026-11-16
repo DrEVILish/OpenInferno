@@ -513,6 +513,17 @@ static void cm_start_b(int owner, int role, int steer, int keep_a)
         if (!keep_a) sub_subscribe(&A, k, c, "OpenProSeries-6");
     }
 }
+/* B's status line clockmode=WORD: 1 when it says want; with want NULL, 1 when there is no clockmode line */
+static int cm_status(const char *want)
+{
+    static char out[16384];
+    out[0] = 0;
+    ctl_exec(&B, "status", out, sizeof(out));
+    const char *f = strstr(out, "\nclockmode=");
+    char w[16] = "";
+    if (f) sscanf(f + 11, "%15s", w);
+    return want ? !strcmp(w, want) : !f;
+}
 static int cm_state(const port_t *p) { ptp_stats_t s; ptp_get_stats(p->ptp, &s); return s.state; }
 static int cm_saved(const char *want)
 {
@@ -611,10 +622,17 @@ static void clockmode_switch(void)
 
     TEST("clockmode: live Desk leads -> Sync to Dante (L -> F) and back (F -> L), 5 / 5 each way: L -> F muted only until ready, 0 slips after ready, NCO <= 5 "
          "ppm/s; F -> L never muted, no ToD step, 0 slips, NCO <= 1 ppm/s back to nominal");
-    int lf = 0, fl = 0, i_all = cm_n;
-    for (int k = 1; k <= 5; k++) { lf += cm_to_follow(k); fl += cm_to_lead(k); }
+    int lf = 0, fl = 0, i_all = cm_n, st_l = cm_status("leader"), st_f = 1;
+    for (int k = 1; k <= 5; k++) {
+        lf += cm_to_follow(k);
+        st_f &= cm_status("follow");
+        fl += cm_to_lead(k);
+        st_l &= cm_status("leader");
+    }
     CHECKF(lf == 5 && fl == 5, "L->F %d / 5, F->L %d / 5", lf, fl);
     CHECKF(cm_slew(i_all) <= 5000.000001, "NCO slew %.1f ppb/s over every switch", cm_slew(i_all));
+    TEST("status: clockmode=leader in Desk leads (at start, after each clockmode leader), follow after each clockmode follow");
+    CHECKF(st_l && st_f, "status clockmode: leader %d follow %d", st_l, st_f);
 
     TEST("clockmode: a repeated \"clockmode follow\" in Sync to Dante is a no-op (ok, still locked, never muted, no step)");
     cm_to_follow(6);
@@ -634,6 +652,7 @@ static void clockmode_switch(void)
     cm_run(40.0);
     CHECKF(cm_state(&B) == PTP_SLAVE && ready_field(&B) == 1, "after restart B %s ready %d", ptp_state_name(cm_state(&B)),
            ready_field(&B));
+    CHECKF(cm_status("follow"), "status clockmode after the restart into the saved follow (Desk leads flags)");
     CHECK(cm_ctl("clockmode leader") == 0);
     cm_run(10.0);
     CHECK(cm_saved("clockmode leader\n"));
@@ -641,6 +660,7 @@ static void clockmode_switch(void)
     cm_run(10.0);
     CHECKF(cm_state(&B) == PTP_MASTER && ready_field(&B) == 1, "after restart B %s ready %d", ptp_state_name(cm_state(&B)),
            ready_field(&B));
+    CHECKF(cm_status("leader"), "status clockmode after the restart into the saved leader (Sync to Dante flags)");
 
     TEST("clockmode: refused with an error reply without --owner (both ways) and for a bad word; the role is unchanged");
     char st[300];
@@ -653,6 +673,7 @@ static void clockmode_switch(void)
     int l = cm_ctl("clockmode leader") == -1 && strstr(cm_out, "--owner");
     int x = cm_ctl("clockmode sideways") == -1 && strstr(cm_out, "leader or follow");
     cm_run(2.0);
+    CHECKF(cm_status(NULL), "status: no clockmode line without --owner");
     CHECKF(f && l && x && cm_state(&B) == PTP_MASTER, "refused: follow %d leader %d bad word %d, B %s", f, l, x,
            ptp_state_name(cm_state(&B)));
     B.state_path[0] = 0;

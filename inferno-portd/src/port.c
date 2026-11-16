@@ -221,6 +221,12 @@ static void port_wr_ctrl(port_t *p)
     port_wr(p->hw, INF_CTRL, en | ((uint32_t)cols << 8));
 }
 
+int port_clockmode(const port_t *p)
+{
+    int steer, role = ptp_get_role(p->ptp, &steer);
+    return role == PTP_ROLE_FOLLOWER && steer ? CLOCKMODE_FOLLOW : CLOCKMODE_LEADER;
+}
+
 int port_set_clockmode(port_t *p, int mode)
 {
     if (!p->ptp || !p->clk || !dclock_owner(p->clk)) return -1;

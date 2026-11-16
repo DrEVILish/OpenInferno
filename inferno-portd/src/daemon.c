@@ -26,6 +26,10 @@ int portd_start(port_t *p, hw_t *hw, const portd_opts_t *o)
         LOGE("--steer needs --owner (only the desk clock owner can step or steer the clock)");
         return -1;
     }
+    if (o->trim_ppm != 0.0 && !o->clock_owner) {   /* as --steer: only the owner writes PTP_INCR / MEDIA_INC */
+        LOGE("--trim-ppm needs --owner (only the desk clock owner sets the clock's frequency)");
+        return -1;
+    }
     uint32_t id = port_rd(hw, AOIP_ID), iid = port_rd(hw, INF_ID);
     if (id != AOIP_ID_VALUE || iid != INF_ID_VALUE) {
         LOGE("port block: IDs 0x%08x / 0x%08x (want OAP2 / OIN2): not an Inferno-capable port", id, iid);
@@ -70,7 +74,7 @@ int portd_start(port_t *p, hw_t *hw, const portd_opts_t *o)
         }
         p->dirty = 0;
     }
-    dclock_cfg_t dc = { o->clock_owner, p->fs, o->audio_loop, o->cs2k, o->cs2k_r0, o->fail_leader, o->acq_ppm_s };
+    dclock_cfg_t dc = { o->clock_owner, p->fs, o->audio_loop, o->cs2k, o->cs2k_r0, o->fail_leader, o->acq_ppm_s, o->trim_ppm };
     p->clk = dclock_new(hw, &dc);
     dclock_on_load(p->clk, on_load, p);
     if (o->clock_owner) hw_wr(hw, hw->clock_base + INF_MEDIA_FS, (uint32_t)p->fs);   /* port 0's rate drives the desk clock */
@@ -78,6 +82,9 @@ int portd_start(port_t *p, hw_t *hw, const portd_opts_t *o)
                      ptp_ready_ns(hw->sw_stamps, o->ready_us) };
     LOGI("clock ready at |offset| < %.0f us held 1 s (%s)", pc.ready_ns / 1000.0,
          o->ready_us ? "--ready-us" : hw->sw_stamps ? "software stamps" : "hardware stamps");
+    if (o->trim_ppm != 0.0)
+        LOGI("--trim-ppm %+.3f: Desk leads glides the NCO there at %.0f ppm/s (Sync to Dante: the servo's frequency)", o->trim_ppm,
+             DCLK_LEAD_GLIDE_PPM_S);
     p->ptp = ptp_new(p->net, p->clk, p->mac, &pc);
     ptp_on_mute(p->ptp, clock_mute, p);
     if (p->clockmode && port_set_clockmode(p, p->clockmode)) LOGW("saved clockmode needs --owner: kept the launch PTP role");

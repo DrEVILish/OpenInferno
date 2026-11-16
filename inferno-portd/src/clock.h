@@ -65,10 +65,13 @@ double aloop_sample(aloop_t *a, double phase, uint64_t t_ns);   /* returns the c
 #define DCLK_SLEW_PPM_S 5.0
 #define DCLK_PERIOD_NS  125000000ull
 #define CS2K_STEP_PPM   (DCLK_SLEW_PPM_S * 0.125)
-/* a clock leader by choice (not GO LEADER) without an audio loop takes the NCO from the frequency it held (the one it
- * followed: Sync to Dante -> Desk leads) back to nominal at this rate (clock design note 2026-11-14 section 6; the
- * --trim-ppm value once PR 8 exists) */
+/* a clock leader by choice (not GO LEADER) without an audio loop takes the NCO from the frequency it held (nominal at
+ * start, the one it followed on Sync to Dante -> Desk leads) to the --trim-ppm value at this rate (clock design note
+ * 2026-11-14 section 6), inside D4's 5 ppm/s for the whole NCO */
 #define DCLK_LEAD_GLIDE_PPM_S 1.0
+/* --trim-ppm: |trim| at most this. clk50 measured -8.5 ppm (T1; -44 on the old cable); typical Dante VCXOs pull
+ * +-100..200 ppm, so a trim inside +-100 never takes a follower past its pull range on its own */
+#define DCLK_TRIM_MAX_PPM 100.0
 #define DCLK_SETTLE_NS  2000000000ull   /* a follower's audio loop starts after the PTP has held its lock this long */
 #define DCLK_ACQ_NS     250000000ull    /* the acquisition's measurement: 1 / 1042 sample in 0.25 s = 0.08 ppm at 48 kHz */
 /* a first measurement up to DCLK_ACQ_MIN_PPM is left to the phase loop: 2 s into its lock the PTP may still move the
@@ -98,6 +101,8 @@ typedef struct {
     uint32_t cs2k_r0;
     int      fail_leader;          /* on source loss: 1 = GO LEADER, 0 = HOLDOVER (dclock_set_fail at run time) */
     double   acq_ppm_s;            /* a follower's acquisition glide (ppm/s); 0 = DCLK_SLEW_PPM_S */
+    double   trim_ppm;             /* --trim-ppm: Desk leads' NCO frequency against nominal (no audio loop; Sync to Dante
+                                    * ignores it: the servo owns the frequency) */
 } dclock_cfg_t;
 
 dclock_t *dclock_new(hw_t *h, const dclock_cfg_t *c);

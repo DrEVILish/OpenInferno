@@ -63,8 +63,8 @@ static void qualify(int k)
     A.n=0; B.n=1; A.mac[5]=0x11; B.mac[5]=0x22;
     snprintf(A.desk,sizeof(A.desk),"FOH"); snprintf(B.desk,sizeof(B.desk),"MON");
     A.lat_mode=B.lat_mode=3;
-    portd_opts_t oa={1,0,0,0,0,PTP_ROLE_LEADER,1,-2,0,0,0};
-    portd_opts_t ob={1,0,0,0,0,PTP_ROLE_FOLLOWER,1,-2,0,0,0};
+    portd_opts_t oa={1,0,0,0,0,PTP_ROLE_LEADER,1,-2,0,0,0,0};
+    portd_opts_t ob={1,0,0,0,0,PTP_ROLE_FOLLOWER,1,-2,0,0,0,0};
     noise_rng=11+k; fault_case=k; fault_start=vt;
     model_wire_drop(W,lose_sync); model_wire_delay(W,delay_sync);
     CHECK(portd_start(&A,device(0,leader[k],TOD_L),&oa)==0);
@@ -229,8 +229,8 @@ static void overlapping_parent(void)
     snprintf(A.desk,sizeof(A.desk),"FOH");
     snprintf(B.desk,sizeof(B.desk),"MON");
     A.lat_mode=B.lat_mode=3;
-    portd_opts_t oa={1,0,0,0,0,PTP_ROLE_LEADER,1,-2,0,0,0};
-    portd_opts_t ob={1,0,0,0,0,PTP_ROLE_FOLLOWER,1,-2,0,0,0};
+    portd_opts_t oa={1,0,0,0,0,PTP_ROLE_LEADER,1,-2,0,0,0,0};
+    portd_opts_t ob={1,0,0,0,0,PTP_ROLE_FOLLOWER,1,-2,0,0,0,0};
     CHECK(portd_start(&A,mk(0,1,0,TOD_L),&oa)==0);
     CHECK(portd_start(&B,mk(1,2,0,TOD_L),&ob)==0);
     sub_subscribe(&B,0,"01","FOH-1"); run(30);

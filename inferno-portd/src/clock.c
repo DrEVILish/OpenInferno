@@ -443,7 +443,7 @@ void dclock_tick(dclock_t *d, uint64_t now)
         int acq = d->al.acq;
         if (loop) audio_loop(d, now, &target);
         else if (d->mode == DCLK_LEADER && !d->failed)
-            d->leader_ppb += clampd(-d->leader_ppb, DCLK_LEAD_GLIDE_PPM_S * 1000.0 * (double)DCLK_PERIOD_NS * 1e-9);
+            d->leader_ppb += clampd(d->c.trim_ppm * 1000.0 - d->leader_ppb, DCLK_LEAD_GLIDE_PPM_S * 1000.0 * (double)DCLK_PERIOD_NS * 1e-9);
         /* the acquisition's glide moves the ratio at its own rate; every other move at CS2K_STEP_PPM */
         double step = loop && follow && (acq || d->al.acq) ? d->al.acq_ppm_s * 0.125 : CS2K_STEP_PPM;
         if (d->c.cs2k) cs2k_steer(d, target, now, step);

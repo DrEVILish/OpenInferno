@@ -454,6 +454,212 @@ static void pi9696_48ch(void)
            (unsigned long long)sa.pat_ok, (unsigned long long)sa.pat_bad);
 }
 
+/* clock design note 2026-11-14 section 6 (PR 7): the live clock mode switch, "ctl clockmode leader|follow" (Desk leads | Sync to Dante), a saved
+ * setting. B = the desk on the io (--owner, no audio loop / CS2000: the NCO is the desk's pitch), A = a Dante device
+ * (auto: the desk's clock follower in Desk leads, the clock leader in Sync to Dante; --ready-us 100 as a device with pull tolerance,
+ * crystal -8.5 ppm, the T1 figure). Every 125 ms B's NCO rate is logged; every 1 ms B's INF_CTRL enables */
+#define CM_N 8192
+static double cm_ppb[CM_N];
+static int cm_n, cm_muted_ms;
+static char cm_dir[] = "/tmp/openinferno-clockmode-XXXXXX";
+
+static void cm_run(double seconds)
+{
+    for (uint64_t end = vt + (uint64_t)(seconds * 1e9); vt < end;) {
+        run(0.001);
+        cm_muted_ms += enables(&B) != 3;
+        if (vt % 125000000ull == 0 && cm_n < CM_N) {
+            dclock_stats_t c;
+            dclock_get_stats(B.clk, &c);
+            cm_ppb[cm_n++] = c.ppb;
+        }
+    }
+}
+/* the most B's NCO moved in any 1 s (8 samples) of samples i0..cm_n-1 (ppb) */
+static double cm_slew(int i0)
+{
+    double w = 0;
+    for (int i = i0 + 8; i < cm_n; i++) w = fmax(w, fabs(cm_ppb[i] - cm_ppb[i - 8]));
+    return w;
+}
+static char cm_out[256];
+static int cm_ctl(const char *cmd)
+{
+    cm_out[0] = 0;
+    ctl_exec(&B, cmd, cm_out, sizeof(cm_out));
+    return !strcmp(cm_out, "ok\n") ? 0 : !strncmp(cm_out, "err ", 4) ? -1 : -2;
+}
+/* B started with these launch flags on the state file cm_dir/state (A kept running when keep_a) */
+static void cm_start_b(int owner, int role, int steer, int keep_a)
+{
+    if (!keep_a) {
+        if (A.hw) { portd_stop(&A); A.hw->ops->close(A.hw); }
+        W = model_wire_new();
+        port_defaults(&A);
+        A.n = 0; snprintf(A.desk, sizeof(A.desk), "DANTE"); A.mac[5] = 0x51; A.lat_mode = 3;
+        portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_AUTO, 1, -2, 0, 0, 100 };
+        CHECK(portd_start(&A, mk(0, 1, -8.5, TOD_L + 3123456789ull), &oa) == 0);
+    }
+    if (B.hw) { portd_stop(&B); B.hw->ops->close(B.hw); }
+    port_defaults(&B);
+    B.n = 5; snprintf(B.desk, sizeof(B.desk), "OpenProSeries"); B.mac[5] = 0x06; B.lat_mode = 3;   /* 5 ms: the model delivers on 1 ms ticks */
+    snprintf(B.state_path, sizeof(B.state_path), "%s/state", cm_dir);
+    portd_opts_t ob = { owner, 0, 0, 0, 0, role, steer, -2, 0, 0, 0 };
+    CHECK(portd_start(&B, mk(1, 2, 0.0, TOD_L), &ob) == 0);
+    for (int k = 0; k < 8; k++) {
+        char c[8];
+        snprintf(c, sizeof(c), "%02d", k + 1);
+        sub_subscribe(&B, k, c, "DANTE-1");
+        if (!keep_a) sub_subscribe(&A, k, c, "OpenProSeries-6");
+    }
+}
+static int cm_state(const port_t *p) { ptp_stats_t s; ptp_get_stats(p->ptp, &s); return s.state; }
+static int cm_saved(const char *want)
+{
+    char line[256];
+    int got = 0;
+    FILE *f = fopen(B.state_path, "r");
+    while (f && fgets(line, sizeof(line), f)) got |= !strcmp(line, want);
+    if (f) fclose(f);
+    return got;
+}
+
+/* L -> F: muted at the command (no frame played or sent while muted), re-locked and unmuted under the #36 gate; then
+ * 20 s: never muted, B's RX late / early / pattern errors +0, steps and media loads +0; the NCO <= 5 ppm/s throughout */
+static int cm_to_follow(int cycle)
+{
+    int i0 = cm_n, ok = cm_ctl("clockmode follow") == 0;
+    run(0.001);
+    int muted_at_once = enables(&B) == 0;
+    model_stats_t m0, m;
+    model_get_stats(B.hw, &m0);
+    uint64_t t0 = vt, leak = 0;
+    while (enables(&B) != 3 && vt - t0 < 60000000000ull) {
+        cm_run(0.001);
+        model_get_stats(B.hw, &m);
+        leak = (m.rx_media - m0.rx_media) + (m.tx_media - m0.tx_media);
+    }
+    double ready_s = (double)(vt - t0) * 1e-9;
+    dclock_stats_t c0, c;
+    dclock_get_stats(B.clk, &c0);
+    model_get_stats(B.hw, &m0);
+    cm_muted_ms = 0;
+    cm_run(20.0);
+    dclock_get_stats(B.clk, &c);
+    model_get_stats(B.hw, &m);
+    uint64_t slips = (m.rx_late - m0.rx_late) + (m.rx_early - m0.rx_early) + (m.pat_bad - m0.pat_bad);
+    double slew = cm_slew(i0);
+    int pass = ok && muted_at_once && leak == 0 && ready_s < 60.0 && cm_state(&B) == PTP_SLAVE && cm_muted_ms == 0 &&
+               slips == 0 && m.rx_media > m0.rx_media && c.steps == c0.steps && c.media_loads == c0.media_loads &&
+               slew <= 5000.000001;
+    CHECKF(pass, "L->F %d: reply ok %d, muted at once %d, %llu frames while muted, ready %.1f s, B %s, muted %d ms after "
+           "ready, slips %llu (rx +%llu), steps +%llu loads +%llu after ready, NCO slew %.1f ppb/s", cycle, ok, muted_at_once,
+           (unsigned long long)leak, ready_s, ptp_state_name(cm_state(&B)), cm_muted_ms, (unsigned long long)slips,
+           (unsigned long long)(m.rx_media - m0.rx_media), (unsigned long long)(c.steps - c0.steps),
+           (unsigned long long)(c.media_loads - c0.media_loads), slew);
+    printf("  L->F %d: muted %.1f s until ready, NCO slew <= %.0f ppb/s, 0 frames while muted: %d, slips after ready %llu\n", cycle,
+           ready_s, slew, leak == 0, (unsigned long long)slips);
+    return pass;
+}
+
+/* F -> L: never muted, no ToD step (steps and media loads +0), RX late / early / pattern errors +0, the NCO <= 1 ppm/s
+ * and back at nominal (no trim yet) within 30 s, B leads and A follows it */
+static int cm_to_lead(int cycle)
+{
+    int i0 = cm_n;
+    dclock_stats_t c0, c;
+    model_stats_t m0, m;
+    dclock_get_stats(B.clk, &c0);
+    model_get_stats(B.hw, &m0);
+    double from = c0.ppb;
+    cm_muted_ms = 0;
+    int ok = cm_ctl("clockmode leader") == 0;
+    cm_run(30.0);
+    dclock_get_stats(B.clk, &c);
+    model_get_stats(B.hw, &m);
+    uint64_t slips = (m.rx_late - m0.rx_late) + (m.rx_early - m0.rx_early) + (m.pat_bad - m0.pat_bad);
+    double slew = cm_slew(i0 > 8 ? i0 - 8 : 0);
+    int pass = ok && cm_muted_ms == 0 && c.steps == c0.steps && c.media_loads == c0.media_loads && slips == 0 &&
+               m.rx_media > m0.rx_media && slew <= 1000.000001 && fabs(c.ppb) < 1.0 && cm_state(&B) == PTP_MASTER &&
+               cm_state(&A) == PTP_SLAVE;
+    CHECKF(pass, "F->L %d: reply ok %d, muted %d ms, steps +%llu loads +%llu, slips %llu (rx +%llu), NCO slew %.1f ppb/s, "
+           "%.1f -> %.1f ppb, B %s A %s", cycle, ok, cm_muted_ms, (unsigned long long)(c.steps - c0.steps),
+           (unsigned long long)(c.media_loads - c0.media_loads), (unsigned long long)slips,
+           (unsigned long long)(m.rx_media - m0.rx_media), slew, from, c.ppb, ptp_state_name(cm_state(&B)),
+           ptp_state_name(cm_state(&A)));
+    printf("  F->L %d: NCO %.0f -> %.1f ppb, slew <= %.0f ppb/s, muted %d ms, steps +%llu, slips %llu\n", cycle, from, c.ppb, slew,
+           cm_muted_ms, (unsigned long long)(c.steps - c0.steps), (unsigned long long)slips);
+    return pass;
+}
+
+static void clockmode_switch(void)
+{
+    if (B.hw) { portd_stop(&B); B.hw->ops->close(B.hw); B.hw = NULL; }
+    CHECK(mkdtemp(cm_dir) != NULL);
+    cm_n = 0;
+    cm_start_b(1, PTP_ROLE_LEADER, 0, 0);   /* Desk leads: --ptp leader --owner */
+    cm_run(30.0);
+    TEST("clockmode: Desk leads start: B is the clock leader, A (Dante, -8.5 ppm, 3 s off) is its clock follower");
+    CHECKF(cm_state(&B) == PTP_MASTER && cm_state(&A) == PTP_SLAVE && ready_field(&A) == 1, "B %s A %s",
+           ptp_state_name(cm_state(&B)), ptp_state_name(cm_state(&A)));
+
+    TEST("clockmode: a repeated \"clockmode leader\" in Desk leads is a no-op (ok, no re-election, never muted)");
+    cm_muted_ms = 0;
+    CHECK(cm_ctl("clockmode leader") == 0);
+    cm_run(0.5);
+    CHECKF(cm_state(&B) == PTP_MASTER && cm_muted_ms == 0, "B %s, muted %d ms", ptp_state_name(cm_state(&B)), cm_muted_ms);
+
+    TEST("clockmode: live Desk leads -> Sync to Dante (L -> F) and back (F -> L), 5 / 5 each way: L -> F muted only until ready, 0 slips after ready, NCO <= 5 "
+         "ppm/s; F -> L never muted, no ToD step, 0 slips, NCO <= 1 ppm/s back to nominal");
+    int lf = 0, fl = 0, i_all = cm_n;
+    for (int k = 1; k <= 5; k++) { lf += cm_to_follow(k); fl += cm_to_lead(k); }
+    CHECKF(lf == 5 && fl == 5, "L->F %d / 5, F->L %d / 5", lf, fl);
+    CHECKF(cm_slew(i_all) <= 5000.000001, "NCO slew %.1f ppb/s over every switch", cm_slew(i_all));
+
+    TEST("clockmode: a repeated \"clockmode follow\" in Sync to Dante is a no-op (ok, still locked, never muted, no step)");
+    cm_to_follow(6);
+    dclock_stats_t c0, c;
+    dclock_get_stats(B.clk, &c0);
+    cm_muted_ms = 0;
+    CHECK(cm_ctl("clockmode follow") == 0);
+    cm_run(2.0);
+    dclock_get_stats(B.clk, &c);
+    CHECKF(cm_state(&B) == PTP_SLAVE && cm_muted_ms == 0 && c.locked && c.steps == c0.steps, "B %s muted %d ms locked %d steps +%llu",
+           ptp_state_name(cm_state(&B)), cm_muted_ms, c.locked, (unsigned long long)(c.steps - c0.steps));
+
+    TEST("clockmode: the setting is saved and restored at start (follow over the Desk leads flags, leader over the Sync to Dante flags)");
+    cm_run(1.5);   /* past the 1 s save */
+    CHECK(cm_saved("clockmode follow\n"));
+    cm_start_b(1, PTP_ROLE_LEADER, 0, 1);   /* restart with the Desk leads flags */
+    cm_run(40.0);
+    CHECKF(cm_state(&B) == PTP_SLAVE && ready_field(&B) == 1, "after restart B %s ready %d", ptp_state_name(cm_state(&B)),
+           ready_field(&B));
+    CHECK(cm_ctl("clockmode leader") == 0);
+    cm_run(10.0);
+    CHECK(cm_saved("clockmode leader\n"));
+    cm_start_b(1, PTP_ROLE_FOLLOWER, 1, 1);   /* restart with the Sync to Dante flags */
+    cm_run(10.0);
+    CHECKF(cm_state(&B) == PTP_MASTER && ready_field(&B) == 1, "after restart B %s ready %d", ptp_state_name(cm_state(&B)),
+           ready_field(&B));
+
+    TEST("clockmode: refused with an error reply without --owner (both ways) and for a bad word; the role is unchanged");
+    char st[300];
+    snprintf(st, sizeof(st), "%s/state", cm_dir);
+    B.state_path[0] = 0;   /* this stop saves nothing: B starts from no saved mode */
+    unlink(st);
+    cm_start_b(0, PTP_ROLE_LEADER, 0, 1);
+    cm_run(6.0);
+    int f = cm_ctl("clockmode follow") == -1 && strstr(cm_out, "--owner");
+    int l = cm_ctl("clockmode leader") == -1 && strstr(cm_out, "--owner");
+    int x = cm_ctl("clockmode sideways") == -1 && strstr(cm_out, "leader or follow");
+    cm_run(2.0);
+    CHECKF(f && l && x && cm_state(&B) == PTP_MASTER, "refused: follow %d leader %d bad word %d, B %s", f, l, x,
+           ptp_state_name(cm_state(&B)));
+    B.state_path[0] = 0;
+    unlink(st);
+    rmdir(cm_dir);
+}
+
 int main(void)
 {
     g_log_level = getenv("V") ? LOG_DEBUG : LOG_WARN;
@@ -595,5 +801,6 @@ int main(void)
     xbar_stamps();
     follower_days_off();
     pi9696_48ch();
+    clockmode_switch();
     return t_done("test_inproc");
 }

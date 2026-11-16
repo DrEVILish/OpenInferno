@@ -221,6 +221,20 @@ static void port_wr_ctrl(port_t *p)
     port_wr(p->hw, INF_CTRL, en | ((uint32_t)cols << 8));
 }
 
+int port_set_clockmode(port_t *p, int mode)
+{
+    if (!p->ptp || !p->clk || !dclock_owner(p->clk)) return -1;
+    if (mode != p->clockmode) { p->clockmode = mode; p->dirty = 1; }
+    int steer, role = ptp_get_role(p->ptp, &steer), want = mode == CLOCKMODE_FOLLOW ? PTP_ROLE_FOLLOWER : PTP_ROLE_LEADER;
+    /* the mode in force: Sync to Dante = clock follower with steer; Desk leads = clock leader (launched without --steer) */
+    if (role == want && (want == PTP_ROLE_FOLLOWER ? steer : dclock_mode(p->clk) == DCLK_LEADER)) return 0;
+    LOGI("%s", mode == CLOCKMODE_FOLLOW ? "clockmode follow - Sync to Dante" : "clockmode leader - Desk leads");
+    /* L -> F: Inferno muted before the re-acquire; F -> L stays on (a leader is ready at once, no ToD step) */
+    if (want == PTP_ROLE_FOLLOWER) { p->clock_ready = 0; port_wr_ctrl(p); }
+    ptp_set_role(p->ptp, want, 1);   /* steer both ways: the desk clock follows the PTP state (FOLLOWER / LEADER) */
+    return 0;
+}
+
 void port_apply_hw(port_t *p)
 {
     hw_t *h = p->hw;

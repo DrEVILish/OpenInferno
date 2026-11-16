@@ -109,6 +109,7 @@ void ptp_on_mute(ptp_t *p, void (*fn)(void *), void *ctx);
 ptp_t *ptp_new(net_t *n, struct dclock *clk, const uint8_t mac[6], const ptp_cfg_t *cfg);
 void   ptp_free(ptp_t *p);
 void   ptp_set_role(ptp_t *p, int role, int steer);
+int    ptp_get_role(const ptp_t *p, int *steer);
 void   ptp_tick(ptp_t *p, uint64_t now);
 /* the clock is ready for audio: a leader (or PTP off) at once; a follower locked with |offset| < PTP_READY_NS for
  * PTP_READY_HOLD_NS, again after every re-acquire (clock design note 2026-11-14 section 3) */

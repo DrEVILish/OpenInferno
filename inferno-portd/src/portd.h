@@ -110,6 +110,7 @@ typedef struct port {
     int      maxlat, caps_ch, caps_fch, caps_txf, caps_rxf;
     char     txname[MAX_CH][32], rxname[MAX_CH][32];
     char     state_path[256];
+    int      clockmode;              /* saved ctl clockmode: 0 none, CLOCKMODE_LEADER, CLOCKMODE_FOLLOW */
     int      dirty;
     /* run time */
     hw_t    *hw;
@@ -138,6 +139,10 @@ static inline int port_rx_channels(const port_t *p) { return p->caps_rxf ? p->ch
 
 /* identity and adverts (port.c) */
 void port_defaults(port_t *p);
+/* ctl clockmode: the live clock mode switch, Desk leads <-> Sync to Dante (clock design note 2026-11-14 section 6),
+ * saved; -1: no desk clock owner (--owner). The current mode again is a no-op */
+enum { CLOCKMODE_LEADER = 1, CLOCKMODE_FOLLOW = 2 };
+int  port_set_clockmode(port_t *p, int mode);
 void port_set_identity(port_t *p);              /* name, factory name, device id from desk / n / MAC */
 void port_advertise(port_t *p);                 /* (re)announce every mDNS record */
 void port_unadvertise(port_t *p);

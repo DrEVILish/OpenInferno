@@ -510,6 +510,11 @@ follower port's when the desk follows an Inferno port, else the first Inferno po
      servo may still slew or step the network time once (the desk clock does not move).
    - `clockfail holdover|leader` applies at run time (at once while the source is lost); `master` and `internal` are
      read as leader, other words are refused.
+   - `clockmode leader|follow` (the desk clock owner only, else `err`; saved in the state file, restored at start;
+     the mode in force again is a no-op) switches the clock mode live between Desk leads (`leader`) and Sync to Dante (`follow`) (clock design note
+     2026-11-14 section 6). Desk leads → Sync to Dante:
+     Inferno muted at once, the follower re-acquires (its steps re-anchor Inferno only, the NCO glides ≤ 5 ppm/s), unmuted
+     at ready. Sync to Dante → Desk leads: no ToD step, Inferno stays on, the NCO holds, then glides ≤ 1 ppm/s to nominal.
 3. Leader fields (ours, open question 6): subdomain `_DFLT`, identifier `DFLT`, stratum 4, variance 0xF060,
    `preferred` = 1 for `ptp leader` (it then wins the comparison as statime maps preferred to priority1 64),
    Sync every 2⁻² s (`--log-sync`), two-step, TTL 1, DSCP CS7.
@@ -535,7 +540,7 @@ Inferno port. Its pieces and where they come from:
 **Identity:** device `<DESK>-<n>`, factory name `OPS-<MAC>`, device id = EUI-64 of the MAC, channels `01`…`64`,
 advertised `nchan=16` (option `--nchan`), `fpp=32,2`, `latency_ns` = the port's mode. **Control lines** (OMC
 `PortdConfig`, aoip-ports.h): `deskname`, `rate`, `channels`, `latency 0.5|1|2|5`, `ptp leader|follower [steer]|auto|off`,
-`clock owner|none`, `clockfail`, `sub <k> <ch>@<dev>`, `unsub`, `txname`, `rxname`, `mcast`, `mcastdel`, `status`.
+`clock owner|none`, `clockfail`, `clockmode leader|follow`, `sub <k> <ch>@<dev>`, `unsub`, `txname`, `rxname`, `mcast`, `mcastdel`, `status`.
 
 **Tests** (`make check`, `make check-ppc`):
 - `test_unit` (85 checks): ARC / CMC / flow-control packets byte by byte against upstream's layouts; PTPv1 Sync /

@@ -447,12 +447,31 @@ static void test_trim(void)
         dclock_cfg_t c = { 1, 48000, 0, 0, 0, 0, 0, 50.0 * sgn };
         dclock_t *d = dclock_new(h, &c);   /* a new desk clock leads */
         double prev = 0, slew = 0, first = 0;
+        /* the glide's two log lines: stderr into a file while it runs */
+        FILE *lf = tmpfile();
+        int lvl = g_log_level, err = dup(2);
+        fflush(stderr);
+        dup2(fileno(lf), 2);
+        g_log_level = LOG_INFO;
         for (int k = 0; k < 60000; k++) {   /* 60 s in 1 ms ticks: 50 ppm at 1 ppm/s takes 50 s */
             vt += 1000000ull;
             dclock_tick(d, vt);
             if (!k) first = dclock_freq(d);
             if (k % 1000 == 999) { slew = fmax(slew, fabs(dclock_freq(d) - prev)); prev = dclock_freq(d); }
         }
+        fflush(stderr);
+        dup2(err, 2);
+        close(err);
+        g_log_level = lvl;
+        char lg[4096] = "", ws[64], wd[64];
+        rewind(lf);
+        size_t nl = fread(lg, 1, sizeof(lg) - 1, lf);
+        lg[nl] = 0;
+        fclose(lf);
+        /* 400 steps of 125 ppb, the first at the first tick: done 399 x 125 ms later */
+        snprintf(ws, sizeof(ws), "NCO trim glide start -> %+.1f ppm", 50.0 * sgn);
+        snprintf(wd, sizeof(wd), "NCO trim glide done %+.1f ppm in 49.9 s", 50.0 * sgn);
+        CHECKF(strstr(lg, ws) && strstr(lg, wd), "trim %+d ppm: log lines \"%s\" and \"%s\" in:\n%s", 50 * sgn, ws, wd, lg);
         CHECKF(fabs(first) <= 125.000001 && slew <= 1000.000001 && fabs(dclock_freq(d) - 50000.0 * sgn) < 1e-6,
                "trim %+d ppm: first tick %.1f ppb, slew %.1f ppb/s, now %.3f ppb", 50 * sgn, first, slew, dclock_freq(d));
         const int N = 100000;

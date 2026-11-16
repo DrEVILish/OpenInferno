@@ -507,7 +507,8 @@ follower port's when the desk follows an Inferno port, else the first Inferno po
      ≤ 1 ppm/s after start (never a jump; D4's NCO limit is 5 ppm/s), so PTP_INCR, MEDIA_INC and the Syncs the leader
      sends run at nominal × (1 + X·10⁻⁶) (clock design note 2026-11-14 section 6, PR 8: within ±1 ppm of UTC once T1
      has measured clk50). X is −100…100 (outside: exit 2), needs `--owner` (as `--steer`), default 0. Sync to Dante
-     ignores it (the servo owns the frequency); a leader with an audio loop follows its sample clock instead. It is a
+     ignores it (the servo owns the frequency); a leader with an audio loop follows its sample clock instead.
+     Each glide to the trim logs `NCO trim glide start -> X ppm` and `NCO trim glide done X ppm in T s`. It is a
      launch option only, not saved: no `ctl` command sets it, so the launcher's flag is its one source (a saved copy
      would outlive a changed flag).
    - **Source lost** (PTP leaves the follower state, or no Sync for 4 s): **HOLDOVER** keeps the ratio and the time-of-day

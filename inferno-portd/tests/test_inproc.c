@@ -677,10 +677,17 @@ static void clockmode_trim(void)
     CHECKF(fabs(cm_ppb[0]) <= 250.000001 && cm_slew(0) <= 5000.000001 && fabs(b.ppb + 20000.0) < 1.0,
            "first sample %.1f ppb, slew %.1f ppb/s, now %.1f ppb", cm_ppb[0], cm_slew(0), b.ppb);
     TEST("--trim-ppm -20: the clock leader's Syncs carry the trimmed rate (A, crystal -8.5 ppm, locks at (1 - 20e-6) / (1 - 8.5e-6))");
-    double want = ((1.0 - 20e-6) / (1.0 - 8.5e-6) - 1.0) * 1e9;
-    CHECKF(cm_state(&B) == PTP_MASTER && cm_state(&A) == PTP_SLAVE && a.locked && fabs(a.ppb - want) < 200.0,
-           "B %s A %s locked %d, A %.1f ppb want %.1f", ptp_state_name(cm_state(&B)), ptp_state_name(cm_state(&A)), a.locked,
-           a.ppb, want);
+    /* A pulls in after B's glide (D4: lock < 60 s), then its frequency, 10 s averaged, is the trimmed rate seen from A */
+    double want = ((1.0 - 20e-6) / (1.0 - 8.5e-6) - 1.0) * 1e9, avg = 0;
+    uint64_t t_lock = vt;
+    while (!a.locked && vt - t_lock < 90000000000ull) { cm_run(1.0); dclock_get_stats(A.clk, &a); }
+    double lock_s = (double)(vt - t_lock) * 1e-9;
+    cm_run(5.0);
+    for (int k = 0; k < 10; k++) { cm_run(1.0); dclock_get_stats(A.clk, &a); avg += a.ppb * 0.1; }
+    CHECKF(cm_state(&B) == PTP_MASTER && cm_state(&A) == PTP_SLAVE && a.locked && fabs(avg - want) < 200.0,
+           "B %s A %s locked %d (%.0f s after the glide), A %.1f ppb (10 s average) want %.1f", ptp_state_name(cm_state(&B)),
+           ptp_state_name(cm_state(&A)), a.locked, lock_s, avg, want);
+    printf("  A locked %.0f s after B's start glide, at %.1f ppb (want %.1f)\n", lock_s, avg, want);
     TEST("--trim-ppm -20: Sync to Dante ignores the trim (B follows A); F -> L glides <= 1 ppm/s to the trim, not to nominal");
     int lf = cm_to_follow(1);
     dclock_get_stats(B.clk, &b);

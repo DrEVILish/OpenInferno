@@ -143,6 +143,7 @@ void port_defaults(port_t *p);
  * saved; -1: no desk clock owner (--owner). The current mode again is a no-op */
 enum { CLOCKMODE_LEADER = 1, CLOCKMODE_FOLLOW = 2 };
 int  port_set_clockmode(port_t *p, int mode);
+int  port_clockmode(const port_t *p);           /* the mode in force: FOLLOW = clock follower with steer, else LEADER */
 void port_set_identity(port_t *p);              /* name, factory name, device id from desk / n / MAC */
 void port_advertise(port_t *p);                 /* (re)announce every mDNS record */
 void port_unadvertise(port_t *p);

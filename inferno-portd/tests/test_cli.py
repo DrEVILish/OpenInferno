@@ -49,6 +49,32 @@ class CliEdges(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn(b"--steer needs --owner", result.stderr)
 
+    def test_trim_ppm_range(self):
+        # clock PR 8: --trim-ppm is -100..100 ppm; outside it (or not a number) the daemon refuses to start
+        for v in ("100.001", "-100.001", "1e9", "nan", "x", ""):
+            with self.subTest(trim=v):
+                result = subprocess.run([BIN, "--backend", "model", "-q", "--owner", "--trim-ppm", v],
+                                        capture_output=True, timeout=2)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(b"bad --trim-ppm (-100..100)", result.stderr)
+        for v in ("100", "-100", "0"):
+            with self.subTest(trim=v):
+                with subprocess.Popen([BIN, "--backend", "model", "-q", "--owner", "--trim-ppm", v],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as proc:
+                    try:
+                        code = proc.wait(timeout=0.3)
+                    except subprocess.TimeoutExpired:
+                        proc.terminate()
+                        self.assertEqual(proc.wait(timeout=2), 0)
+                    else:
+                        self.fail(f"--trim-ppm {v} rejected with exit {code}")
+        try:
+            result = subprocess.run([BIN, "--backend", "model", "-q", "--trim-ppm", "5"], capture_output=True, timeout=1)
+        except subprocess.TimeoutExpired:
+            self.fail("--trim-ppm without --owner started the daemon")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b"--trim-ppm needs --owner", result.stderr)
+
     def test_accept_prefix_boundaries(self):
         for prefix in (0, 32):
             with self.subTest(prefix=prefix):

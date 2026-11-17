@@ -267,7 +267,7 @@ static void test_dclock_model(void)
 {
     TEST("desk clock on the model: fs_phase + CS2000 engine, follower, desk +40 ppm: ratio converges, phase bounded");
     g_now_ns = vnow;
-    dclock_cfg_t c = { 1, 48000, 1, 1, 0x00200000u, 0, 0 };
+    dclock_cfg_t c = { 1, 48000, 1, 1, 0x00200000u, 0, 0, 0 };
     model_cfg_t m;
     memset(&m, 0, sizeof(m));
     m.id = 1; m.maxlat = 3; m.port_base = 0x1000; m.clock_base = 0x1000; m.dclk_base = 0x200; m.cs2k_base = 0x300; m.phy_fd = -1;
@@ -432,6 +432,72 @@ static void test_ready_threshold(void)
     h->ops->close(h);
 }
 
+/* clock PR 8: --trim-ppm X on Desk leads without an audio loop: the start glides the NCO from nominal to X at 1 ppm/s,
+ * then write_incs' sigma-delta keeps PTP_INCR and MEDIA_INC at nominal x (1 + X 1e-6) on average; Sync to Dante ignores X */
+static void test_trim(void)
+{
+    TEST("--trim-ppm +-50: Desk leads glides there at <= 1 ppm/s, then PTP_INCR / MEDIA_INC average nominal x (1 + trim) exactly");
+    g_now_ns = vnow;
+    for (int sgn = -1; sgn <= 1; sgn += 2) {
+        model_cfg_t m;
+        memset(&m, 0, sizeof(m));
+        m.id = 1; m.maxlat = 3; m.port_base = 0x1000; m.clock_base = 0x1000; m.dclk_base = 0xFFFFFFFFu; m.cs2k_base = 0xFFFFFFFFu;
+        m.phy_fd = -1;
+        hw_t *h = model_open(&m);
+        dclock_cfg_t c = { 1, 48000, 0, 0, 0, 0, 0, 50.0 * sgn };
+        dclock_t *d = dclock_new(h, &c);   /* a new desk clock leads */
+        double prev = 0, slew = 0, first = 0;
+        /* the glide's two log lines: stderr into a file while it runs */
+        FILE *lf = tmpfile();
+        int lvl = g_log_level, err = dup(2);
+        fflush(stderr);
+        dup2(fileno(lf), 2);
+        g_log_level = LOG_INFO;
+        for (int k = 0; k < 60000; k++) {   /* 60 s in 1 ms ticks: 50 ppm at 1 ppm/s takes 50 s */
+            vt += 1000000ull;
+            dclock_tick(d, vt);
+            if (!k) first = dclock_freq(d);
+            if (k % 1000 == 999) { slew = fmax(slew, fabs(dclock_freq(d) - prev)); prev = dclock_freq(d); }
+        }
+        fflush(stderr);
+        dup2(err, 2);
+        close(err);
+        g_log_level = lvl;
+        char lg[4096] = "", ws[64], wd[64];
+        rewind(lf);
+        size_t nl = fread(lg, 1, sizeof(lg) - 1, lf);
+        lg[nl] = 0;
+        fclose(lf);
+        /* 400 steps of 125 ppb, the first at the first tick: done 399 x 125 ms later */
+        snprintf(ws, sizeof(ws), "NCO trim glide start -> %+.1f ppm", 50.0 * sgn);
+        snprintf(wd, sizeof(wd), "NCO trim glide done %+.1f ppm in 49.9 s", 50.0 * sgn);
+        CHECKF(strstr(lg, ws) && strstr(lg, wd), "trim %+d ppm: log lines \"%s\" and \"%s\" in:\n%s", 50 * sgn, ws, wd, lg);
+        CHECKF(fabs(first) <= 125.000001 && slew <= 1000.000001 && fabs(dclock_freq(d) - 50000.0 * sgn) < 1e-6,
+               "trim %+d ppm: first tick %.1f ppb, slew %.1f ppb/s, now %.3f ppb", 50 * sgn, first, slew, dclock_freq(d));
+        const int N = 100000;
+        double incr = 335544320.0 * (1.0 + sgn * 50e-6), minc = incr * 48000.0 * 256.0 / 1e9, si = 0, sm = 0;
+        int dith = 1;
+        for (int k = 0; k < N; k++) {
+            vt += 1000000ull;
+            dclock_tick(d, vt);
+            double ri = clk_rd(h, AOIP_PTP_INCR), rm = clk_rd(h, AOIP_MEDIA_INC);
+            dith &= (ri == floor(incr) || ri == ceil(incr)) && (rm == floor(minc) || rm == ceil(minc));
+            si += ri;
+            sm += rm;
+        }
+        CHECKF(dith && fabs(si / N - incr) < 1e-4 && fabs(sm / N - minc) < 1e-4,
+               "trim %+d ppm: PTP_INCR %.6f want %.6f, MEDIA_INC %.6f want %.6f, only floor / ceil written %d", 50 * sgn, si / N,
+               incr, sm / N, minc, dith);
+        dclock_set_mode(d, DCLK_FOLLOWER);   /* Sync to Dante: the servo's frequency, the trim plays no part */
+        dclock_set_freq(d, -12345.0);
+        vt += 1000000ull;
+        dclock_tick(d, vt);
+        CHECKF(dclock_freq(d) == -12345.0, "follower %.1f ppb (want the servo's -12345)", dclock_freq(d));
+        dclock_free(d);
+        h->ops->close(h);
+    }
+}
+
 int main(void)
 {
     g_log_level = LOG_WARN;
@@ -442,6 +508,7 @@ int main(void)
     test_dns();
     test_model_regs();
     test_dclock_model();
+    test_trim();
     /* a port on the model, for the protocol handlers */
     g_now_ns = vnow;
     static port_t P;
@@ -449,7 +516,7 @@ int main(void)
     P.n = 1;
     snprintf(P.desk, sizeof(P.desk), "MON");
     P.cfg_ip = IP4(169, 254, 10, 2);
-    portd_opts_t o = { 1, 0, 0, 0, 0, 0, 0, -2, 0, 0, 0 };
+    portd_opts_t o = { 1, 0, 0, 0, 0, 0, 0, -2, 0, 0, 0, 0 };
     CHECK(portd_start(&P, mkmodel(0), &o) == 0);
     CHECK(!strcmp(P.name, "MON-2") && P.devid[3] == 0xFF && P.devid[4] == 0xFE);
     CHECK(P.advertised);

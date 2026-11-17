@@ -503,6 +503,14 @@ follower port's when the desk follows an Inferno port, else the first Inferno po
      and ratio are not known (hardware)**.
    - **Leader:** the CS2000 stays at R₀ and the loop drives the time of day instead: f = +u × 1000 ppb, so the PTP time
      the leader sends follows the desk's own sample clock.
+   - **Desk leads without an audio loop (the PRO1 io), `--trim-ppm X`:** f glides from nominal to X × 1000 ppb at
+     ≤ 1 ppm/s after start (never a jump; D4's NCO limit is 5 ppm/s), so PTP_INCR, MEDIA_INC and the Syncs the leader
+     sends run at nominal × (1 + X·10⁻⁶) (clock design note 2026-11-14 section 6, PR 8: within ±1 ppm of UTC once T1
+     has measured clk50). X is −100…100 (outside: exit 2), needs `--owner` (as `--steer`), default 0. Sync to Dante
+     ignores it (the servo owns the frequency); a leader with an audio loop follows its sample clock instead.
+     Each glide to the trim logs `NCO trim glide start -> X ppm` and `NCO trim glide done X ppm in T s`. It is a
+     launch option only, not saved: no `ctl` command sets it, so the launcher's flag is its one source (a saved copy
+     would outlive a changed flag).
    - **Source lost** (PTP leaves the follower state, or no Sync for 4 s): **HOLDOVER** keeps the ratio and the time-of-day
      rate in force; **GO LEADER** glides the CS2000 to R₀ at ≤ 5 ppm/s, the time of day following the desk.
    - **Source back (automatic, user 2026-10-20):** the ratio glides back to the last tracked value; the audio loop
@@ -514,7 +522,8 @@ follower port's when the desk follows an Inferno port, else the first Inferno po
      the mode in force again is a no-op) switches the clock mode live between Desk leads (`leader`) and Sync to Dante (`follow`) (clock design note
      2026-11-14 section 6). Desk leads → Sync to Dante:
      Inferno muted at once, the follower re-acquires (its steps re-anchor Inferno only, the NCO glides ≤ 5 ppm/s), unmuted
-     at ready. Sync to Dante → Desk leads: no ToD step, Inferno stays on, the NCO holds, then glides ≤ 1 ppm/s to nominal.
+     at ready. Sync to Dante → Desk leads: no ToD step, Inferno stays on, the NCO holds, then glides ≤ 1 ppm/s to the
+     `--trim-ppm` value (nominal without one).
 3. Leader fields (ours, open question 6): subdomain `_DFLT`, identifier `DFLT`, stratum 4, variance 0xF060,
    `preferred` = 1 for `ptp leader` (it then wins the comparison as statime maps preferred to priority1 64),
    Sync every 2⁻² s (`--log-sync`), two-step, TTL 1, DSCP CS7.

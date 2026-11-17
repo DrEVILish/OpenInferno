@@ -72,8 +72,8 @@ static void latency_beyond_buffer(void)
     A.n = 0; snprintf(A.desk, sizeof(A.desk), "FOH"); A.mac[5] = 0x31;
     B.n = 1; snprintf(B.desk, sizeof(B.desk), "MON"); B.mac[5] = 0x42;
     A.lat_mode = 3; B.lat_mode = 0;
-    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0, 0 };
-    portd_opts_t ob = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0, 0 };
+    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0, 0, 0 };
+    portd_opts_t ob = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0, 0, 0 };
     CHECK(portd_start(&A, mk(0, 1, 0.0, 1760000000ull * 1000000000ull), &oa) == 0);
     CHECK(portd_start(&B, mk_jb(1, 2, 0.0, 1760000000ull * 1000000000ull, 96), &ob) == 0);
     run(2.0);
@@ -124,8 +124,8 @@ static void stamp_case(const char *what, uint32_t rx_late, uint32_t tx_late, int
     port_defaults(&B);
     A.n = 0; snprintf(A.desk, sizeof(A.desk), "FOH"); A.mac[5] = 0x11;
     B.n = 1; snprintf(B.desk, sizeof(B.desk), "MON"); B.mac[5] = 0x22;
-    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0, 0 };
-    portd_opts_t ob = { 0, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 0, -2, 0, 0, 0 };
+    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0, 0, 0 };
+    portd_opts_t ob = { 0, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 0, -2, 0, 0, 0, 0 };
     CHECK(portd_start(&A, mk(0, 1, 0.0, 1760000000ull * 1000000000ull), &oa) == 0);
     model_cfg_t m;
     memset(&m, 0, sizeof(m));
@@ -200,7 +200,7 @@ static int pair(const portd_opts_t *ob)
     port_defaults(&B);
     A.n = 0; snprintf(A.desk, sizeof(A.desk), "DANTE"); A.mac[5] = 0x51;
     B.n = 5; snprintf(B.desk, sizeof(B.desk), "OpenProSeries"); B.mac[5] = 0x06;
-    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0, 0 };
+    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0, 0, 0 };
     CHECK(portd_start(&A, mk(0, 1, 0.0, TOD_L), &oa) == 0);
     hw_t *h = mk(1, 2, 2.8, TOD_L - DAYS34);
     if (portd_start(&B, h, ob)) { h->ops->close(h); B.hw = NULL; return -1; }
@@ -212,7 +212,7 @@ static void follower_days_off(void)
     ptp_stats_t sb;
     dclock_stats_t cb;
     TEST("desk b32 line (--ptp follower, no --owner / --steer), leader 34 days ahead: measured, never stepped");
-    portd_opts_t desk = { 0, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 0, -2, 0, 0, 0 };
+    portd_opts_t desk = { 0, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 0, -2, 0, 0, 0, 0 };
     CHECK(pair(&desk) == 0);
     run(30.0);
     ptp_get_stats(B.ptp, &sb);
@@ -222,11 +222,11 @@ static void follower_days_off(void)
            (unsigned long long)cb.steps);
 
     TEST("--steer without --owner is refused (the servo's steps would be dropped: dclock_step needs the owner)");
-    portd_opts_t noown = { 0, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0, 0 };
+    portd_opts_t noown = { 0, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0, 0, 0 };
     CHECK(pair(&noown) != 0);
 
     TEST("the fix on the desk (--clock-port 6 --owner --steer), leader 34 days ahead: steps and locks within 60 s");
-    portd_opts_t own = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0, 0 };
+    portd_opts_t own = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0, 0, 0 };
     CHECK(pair(&own) == 0);
     run(60.0);
     ptp_get_stats(B.ptp, &sb);
@@ -293,8 +293,8 @@ static void mute_until_ready(void)
     A.n = 0; snprintf(A.desk, sizeof(A.desk), "FOH"); A.mac[5] = 0x11;
     B.n = 1; snprintf(B.desk, sizeof(B.desk), "MON"); B.mac[5] = 0x22;
     A.lat_mode = 3; B.lat_mode = 3;
-    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0, 0 };
-    portd_opts_t ob = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0, 0 };
+    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0, 0, 0 };
+    portd_opts_t ob = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0, 0, 0 };
     CHECK(portd_start(&A, mk(0, 1, 0.0, 1760000000ull * 1000000000ull), &oa) == 0);
     CHECK(portd_start(&B, mk(1, 2, 50.0, 1760000003ull * 1000000000ull + 123456789ull), &ob) == 0);
 
@@ -390,8 +390,8 @@ static void pi9696_48ch(void)
     A.n = 0; snprintf(A.desk, sizeof(A.desk), "FOH"); A.mac[5] = 0x51;
     B.n = 1; snprintf(B.desk, sizeof(B.desk), "PI"); B.mac[5] = 0x62;
     A.lat_mode = 3; B.lat_mode = 3;
-    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0, 0 };
-    portd_opts_t ob = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0, 0 };
+    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0, 0, 0 };
+    portd_opts_t ob = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0, 0, 0 };
     mk_caps = 0x10102030u;
     CHECK(portd_start(&A, mk(0, 1, 0.0, 1760000000ull * 1000000000ull), &oa) == 0);
     mk_caps = 0x10100830u;
@@ -461,6 +461,7 @@ static void pi9696_48ch(void)
 #define CM_N 8192
 static double cm_ppb[CM_N];
 static int cm_n, cm_muted_ms;
+static double cm_trim;   /* B's --trim-ppm */
 static char cm_dir[] = "/tmp/openinferno-clockmode-XXXXXX";
 
 static void cm_run(double seconds)
@@ -497,14 +498,14 @@ static void cm_start_b(int owner, int role, int steer, int keep_a)
         W = model_wire_new();
         port_defaults(&A);
         A.n = 0; snprintf(A.desk, sizeof(A.desk), "DANTE"); A.mac[5] = 0x51; A.lat_mode = 3;
-        portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_AUTO, 1, -2, 0, 0, 100 };
+        portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_AUTO, 1, -2, 0, 0, 100, 0 };
         CHECK(portd_start(&A, mk(0, 1, -8.5, TOD_L + 3123456789ull), &oa) == 0);
     }
     if (B.hw) { portd_stop(&B); B.hw->ops->close(B.hw); }
     port_defaults(&B);
     B.n = 5; snprintf(B.desk, sizeof(B.desk), "OpenProSeries"); B.mac[5] = 0x06; B.lat_mode = 3;   /* 5 ms: the model delivers on 1 ms ticks */
     snprintf(B.state_path, sizeof(B.state_path), "%s/state", cm_dir);
-    portd_opts_t ob = { owner, 0, 0, 0, 0, role, steer, -2, 0, 0, 0 };
+    portd_opts_t ob = { owner, 0, 0, 0, 0, role, steer, -2, 0, 0, 0, cm_trim };
     CHECK(portd_start(&B, mk(1, 2, 0.0, TOD_L), &ob) == 0);
     for (int k = 0; k < 8; k++) {
         char c[8];
@@ -574,7 +575,7 @@ static int cm_to_follow(int cycle)
 }
 
 /* F -> L: never muted, no ToD step (steps and media loads +0), RX late / early / pattern errors +0, the NCO <= 1 ppm/s
- * and back at nominal (no trim yet) within 30 s, B leads and A follows it */
+ * and at the --trim-ppm value (nominal without one) within 30 s, B leads and A follows it */
 static int cm_to_lead(int cycle)
 {
     int i0 = cm_n;
@@ -591,7 +592,7 @@ static int cm_to_lead(int cycle)
     uint64_t slips = (m.rx_late - m0.rx_late) + (m.rx_early - m0.rx_early) + (m.pat_bad - m0.pat_bad);
     double slew = cm_slew(i0 > 8 ? i0 - 8 : 0);
     int pass = ok && cm_muted_ms == 0 && c.steps == c0.steps && c.media_loads == c0.media_loads && slips == 0 &&
-               m.rx_media > m0.rx_media && slew <= 1000.000001 && fabs(c.ppb) < 1.0 && cm_state(&B) == PTP_MASTER &&
+               m.rx_media > m0.rx_media && slew <= 1000.000001 && fabs(c.ppb - cm_trim * 1000.0) < 1.0 && cm_state(&B) == PTP_MASTER &&
                cm_state(&A) == PTP_SLAVE;
     CHECKF(pass, "F->L %d: reply ok %d, muted %d ms, steps +%llu loads +%llu, slips %llu (rx +%llu), NCO slew %.1f ppb/s, "
            "%.1f -> %.1f ppb, B %s A %s", cycle, ok, cm_muted_ms, (unsigned long long)(c.steps - c0.steps),
@@ -681,6 +682,49 @@ static void clockmode_switch(void)
     rmdir(cm_dir);
 }
 
+/* clock PR 8: B launched Desk leads with --trim-ppm -20 (A as in clockmode_switch: crystal -8.5 ppm, B's 0) */
+static void clockmode_trim(void)
+{
+    strcpy(cm_dir, "/tmp/openinferno-clockmode-XXXXXX");
+    CHECK(mkdtemp(cm_dir) != NULL);
+    cm_n = 0;
+    cm_trim = -20.0;
+    cm_start_b(1, PTP_ROLE_LEADER, 0, 0);
+    cm_run(40.0);
+    dclock_stats_t b, a;
+    dclock_get_stats(B.clk, &b);
+    dclock_get_stats(A.clk, &a);
+    TEST("--trim-ppm -20: the start glides the NCO from nominal to the trim (no jump, <= 5 ppm/s: D4's NCO limit)");
+    CHECKF(fabs(cm_ppb[0]) <= 250.000001 && cm_slew(0) <= 5000.000001 && fabs(b.ppb + 20000.0) < 1.0,
+           "first sample %.1f ppb, slew %.1f ppb/s, now %.1f ppb", cm_ppb[0], cm_slew(0), b.ppb);
+    TEST("--trim-ppm -20: the clock leader's Syncs carry the trimmed rate (A, crystal -8.5 ppm, locks at (1 - 20e-6) / (1 - 8.5e-6))");
+    /* A pulls in after B's glide (D4: lock < 60 s), then its frequency, 10 s averaged, is the trimmed rate seen from A */
+    double want = ((1.0 - 20e-6) / (1.0 - 8.5e-6) - 1.0) * 1e9, avg = 0;
+    uint64_t t_lock = vt;
+    while (!a.locked && vt - t_lock < 90000000000ull) { cm_run(1.0); dclock_get_stats(A.clk, &a); }
+    double lock_s = (double)(vt - t_lock) * 1e-9;
+    cm_run(5.0);
+    for (int k = 0; k < 10; k++) { cm_run(1.0); dclock_get_stats(A.clk, &a); avg += a.ppb * 0.1; }
+    CHECKF(cm_state(&B) == PTP_MASTER && cm_state(&A) == PTP_SLAVE && a.locked && fabs(avg - want) < 200.0,
+           "B %s A %s locked %d (%.0f s after the glide), A %.1f ppb (10 s average) want %.1f", ptp_state_name(cm_state(&B)),
+           ptp_state_name(cm_state(&A)), a.locked, lock_s, avg, want);
+    printf("  A locked %.0f s after B's start glide, at %.1f ppb (want %.1f)\n", lock_s, avg, want);
+    TEST("--trim-ppm -20: Sync to Dante ignores the trim (B follows A); F -> L glides <= 1 ppm/s to the trim, not to nominal");
+    int lf = cm_to_follow(1);
+    dclock_get_stats(B.clk, &b);
+    double followed = b.ppb;
+    int fl = cm_to_lead(1);
+    dclock_get_stats(B.clk, &b);
+    CHECKF(lf && fl && fabs(followed + 20000.0) > 5000.0 && fabs(b.ppb + 20000.0) < 1.0,
+           "L->F %d F->L %d, followed %.1f ppb, after F->L %.1f ppb", lf, fl, followed, b.ppb);
+    char st[300];
+    snprintf(st, sizeof(st), "%s/state", cm_dir);
+    B.state_path[0] = 0;
+    unlink(st);
+    rmdir(cm_dir);
+    cm_trim = 0;
+}
+
 int main(void)
 {
     g_log_level = getenv("V") ? LOG_DEBUG : LOG_WARN;
@@ -692,8 +736,8 @@ int main(void)
     A.n = 0; snprintf(A.desk, sizeof(A.desk), "FOH"); A.mac[5] = 0x11;
     B.n = 1; snprintf(B.desk, sizeof(B.desk), "MON"); B.mac[5] = 0x22;
     A.lat_mode = 3; B.lat_mode = 3;   /* 5 ms */
-    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0, 0 };
-    portd_opts_t ob = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0, 0 };
+    portd_opts_t oa = { 1, 0, 0, 0, 0, PTP_ROLE_LEADER, 1, -2, 0, 0, 0, 0 };
+    portd_opts_t ob = { 1, 0, 0, 0, 0, PTP_ROLE_FOLLOWER, 1, -2, 0, 0, 0, 0 };
     CHECK(portd_start(&A, mk(0, 1, 0.0, 1760000000ull * 1000000000ull), &oa) == 0);
     CHECK(portd_start(&B, mk(1, 2, 50.0, 1760000003ull * 1000000000ull + 123456789ull), &ob) == 0);
 
@@ -823,5 +867,6 @@ int main(void)
     follower_days_off();
     pi9696_48ch();
     clockmode_switch();
+    clockmode_trim();
     return t_done("test_inproc");
 }

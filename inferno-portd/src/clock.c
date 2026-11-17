@@ -197,6 +197,8 @@ struct dclock {
     double   cs_track;         /* the commanded ratio while the follower's loop last ran */
     double   cs_base;          /* the commanded ratio when the leader started (the time of day follows its change) */
     int      acquired;         /* a follower's frequency acquisition has completed once (issue 007) */
+    int      trim_glide;       /* Desk leads is gliding the NCO to the --trim-ppm value, since trim_t0 */
+    uint64_t trim_t0;
     uint64_t next_audio, next_check, last_cs_write;
     int      loaded;
     void   (*onload)(void *);
@@ -390,6 +392,25 @@ static void write_incs(dclock_t *d)
     if (mw != d->minc_w) { clk_wr(d->hw, AOIP_MEDIA_INC, mw); d->minc_w = mw; }
 }
 
+/* Desk leads without an audio loop: the NCO glides DCLK_LEAD_GLIDE_PPM_S to the --trim-ppm value (from nominal at start,
+ * from the followed frequency after Sync to Dante), logged when the glide starts and when it is done */
+static void lead_trim_glide(dclock_t *d, uint64_t now)
+{
+    double want = d->c.trim_ppm * 1000.0, lim = DCLK_LEAD_GLIDE_PPM_S * 1000.0 * (double)DCLK_PERIOD_NS * 1e-9;
+    if (d->leader_ppb == want) return;
+    if (!d->trim_glide) {
+        d->trim_glide = 1;
+        d->trim_t0 = now;
+        LOGI("NCO trim glide start -> %+.1f ppm (from %+.1f ppm, %.0f ppm/s)", d->c.trim_ppm, d->leader_ppb * 1e-3,
+             DCLK_LEAD_GLIDE_PPM_S);
+    }
+    d->leader_ppb = fabs(want - d->leader_ppb) <= lim ? want : d->leader_ppb + clampd(want - d->leader_ppb, lim);
+    if (d->leader_ppb == want) {
+        d->trim_glide = 0;
+        LOGI("NCO trim glide done %+.1f ppm in %.1f s", d->c.trim_ppm, (double)(now - d->trim_t0) * 1e-9);
+    }
+}
+
 /* *target: the follower's ratio (ppm) */
 static void audio_loop(dclock_t *d, uint64_t now, double *target)
 {
@@ -441,9 +462,10 @@ void dclock_tick(dclock_t *d, uint64_t now)
         double target = d->mode == DCLK_LEADER ? 0.0 : d->mode == DCLK_FOLLOWER && d->wait_lock ? d->cs_track : d->cs_ppm;
         int loop = d->c.audio_loop && has_dclk(d) && (follow || d->mode == DCLK_LEADER);
         int acq = d->al.acq;
+        int lead = !loop && d->mode == DCLK_LEADER && !d->failed;
         if (loop) audio_loop(d, now, &target);
-        else if (d->mode == DCLK_LEADER && !d->failed)
-            d->leader_ppb += clampd(-d->leader_ppb, DCLK_LEAD_GLIDE_PPM_S * 1000.0 * (double)DCLK_PERIOD_NS * 1e-9);
+        else if (lead) lead_trim_glide(d, now);
+        if (!lead) d->trim_glide = 0;   /* a glide cut short (Sync to Dante, source lost) logs a new start next time */
         /* the acquisition's glide moves the ratio at its own rate; every other move at CS2K_STEP_PPM */
         double step = loop && follow && (acq || d->al.acq) ? d->al.acq_ppm_s * 0.125 : CS2K_STEP_PPM;
         if (d->c.cs2k) cs2k_steer(d, target, now, step);

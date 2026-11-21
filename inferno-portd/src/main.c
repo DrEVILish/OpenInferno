@@ -4,8 +4,9 @@
  *     --desk NAME           desk name (OMC's console preference "deskname"; default OpenProSeries)
  *     --mac XX:..:XX        the port's MAC (default 02:4f:50:53:00:0N)
  *     --ip A.B.C.D[/BITS][,GW]   static address (default: IPv4 link-local, RFC 3927)
- *     --backend devmem|model     devmem: the IO FPGA window through /dev/mem (the AMU); model: the software FPGA
+ *     --backend devmem|model|spidev   devmem: /dev/mem MMIO; model: software FPGA; spidev: SPI register bridge
  *     --mem-base ADDR --mem-size BYTES   the window (devmem; default 0xF2000000, 0x100000)
+ *     --spi-dev PATH [--spi-hz HZ] [--spi-cs PATH] [--spi-lock PATH]   spidev backend options (default 8 MHz)
  *     --port-stride BYTES   port n's block = stride x (n + 1) (top_ecp5: 0x1000; the PRO1 io map: 0x10000)
  *     --clock-port N        the port whose aoip_regs drive the desk clock (default 1 = A)
  *     --dclk-base ADDR      fs_phase.v (default none)       --cs2k-base ADDR   the CS2000 engine (default none)
@@ -107,11 +108,12 @@ int main(int argc, char **argv)
     port_t *p = &P;
     port_defaults(p);
     portd_opts_t o = { 0, 0, 0, 0, 0, 1, 0, -2, 0, 0, 0, 0 };
-    int portn = 1, clock_port = 1, model = 0, model_id = 1;
+    int portn = 1, clock_port = 1, backend = 0, model_id = 1;   /* backend: 0=devmem, 1=model, 2=spidev */
     uint64_t mem_base = 0xF2000000ull, model_tod = 0;
-    uint32_t mem_size = 0x100000, stride = 0x1000, dclk = 0xFFFFFFFFu, cs2k = 0xFFFFFFFFu;
+    uint32_t mem_size = 0x100000, stride = 0x1000, dclk = 0xFFFFFFFFu, cs2k = 0xFFFFFFFFu, spi_hz = 8000000u;
+    int have_mem_size = 0;
     double mppm = 0, mdppm = 0;
-    const char *phy = NULL, *ctlp = NULL;
+    const char *phy = NULL, *ctlp = NULL, *spi_dev = NULL, *spi_cs = NULL, *spi_lock = NULL;
     int have_mac = 0, rt = 0;
     double lat = -1;
     for (int i = 1; i < argc; i++) {
@@ -129,11 +131,17 @@ int main(int argc, char **argv)
             p->cfg_mask = bits == 0 ? 0 : 0xFFFFFFFFu << (32 - bits);
             if (gw[0]) parse_ip(gw, &p->cfg_gw);
         } else if (ARG("--backend")) {
-            if (strcmp(v,"model") && strcmp(v,"devmem")) { fprintf(stderr,"bad --backend\n"); return 2; }
-            model = !strcmp(v,"model");
+            if (!strcmp(v, "devmem")) backend = 0;
+            else if (!strcmp(v, "model")) backend = 1;
+            else if (!strcmp(v, "spidev")) backend = 2;
+            else { fprintf(stderr, "bad --backend\n"); return 2; }
         }
         else if (ARG("--mem-base")) mem_base = strtoull(v, NULL, 0);
-        else if (ARG("--mem-size")) mem_size = num(v);
+        else if (ARG("--mem-size")) { mem_size = num(v); have_mem_size = 1; }
+        else if (ARG("--spi-dev")) spi_dev = v;
+        else if (ARG("--spi-hz")) spi_hz = num(v);
+        else if (ARG("--spi-cs")) spi_cs = v;
+        else if (ARG("--spi-lock")) spi_lock = v;
         else if (ARG("--port-stride")) stride = num(v);
         else if (ARG("--clock-port")) clock_port = atoi(v);
         else if (ARG("--dclk-base")) dclk = num(v);
@@ -190,17 +198,19 @@ int main(int argc, char **argv)
     rnd_seed(mono_ns() ^ ((uint64_t)p->mac[5] << 40) ^ ((uint64_t)getpid() << 20));
 
     hw_t *hw;
+    if (backend == 2 && !have_mem_size) mem_size = 0x10000u;
     uint64_t port_offset = (uint64_t)stride * (unsigned)portn;
     uint64_t clock_offset = (uint64_t)stride * (unsigned)clock_port;
-    if (!model && (clock_port < 1 || clock_port > 6 || stride < 0x400 || (stride & 3u)
+    if (backend != 1 && (clock_port < 1 || clock_port > 6 || stride < 0x400 || (stride & 3u)
         || port_offset > UINT32_MAX - 0x400u || clock_offset > UINT32_MAX - 0x400u
-        || mem_size < 0x400 || (mem_size & 3u) || port_offset + 0x400 > mem_size || clock_offset + 0x400 > mem_size
+        || mem_size < 0x400 || (mem_size & 3u) || (backend == 2 && mem_size > 0x10000u)
+        || port_offset + 0x400 > mem_size || clock_offset + 0x400 > mem_size
         || (dclk != UINT32_MAX && (!hw_offset_valid(dclk, mem_size) || (uint64_t)dclk + 0x100 > mem_size))
         || (cs2k != UINT32_MAX && (!hw_offset_valid(cs2k, mem_size) || (uint64_t)cs2k + 0x100 > mem_size)))) {
         fprintf(stderr, "invalid hardware window or block offsets\n"); return 2;
     }
     uint32_t pbase = (uint32_t)port_offset, cbase = (uint32_t)clock_offset;
-    if (model) {
+    if (backend == 1) {
         model_cfg_t mc;
         memset(&mc, 0, sizeof(mc));
         mc.id = model_id; mc.xtal_ppm = mppm; mc.desk_ppm = mdppm; mc.maxlat = 3;
@@ -211,6 +221,14 @@ int main(int argc, char **argv)
         mc.tod_start_ns = model_tod;
         if (phy && mc.phy_fd < 0) return 1;
         hw = model_open(&mc);
+    } else if (backend == 2) {
+        if (!spi_dev || !*spi_dev || spi_hz == 0) {
+            fprintf(stderr, "--backend spidev requires --spi-dev PATH and nonzero --spi-hz\n");
+            return 2;
+        }
+        hw = hw_spi_open(spi_dev, spi_hz, spi_cs, spi_lock);
+        if (!hw) return 1;
+        hw->port_base = pbase; hw->clock_base = cbase; hw->dclk_base = dclk; hw->cs2k_base = cs2k;
     } else {
         hw = hw_devmem_open(mem_base, mem_size);
         if (!hw) return 1;

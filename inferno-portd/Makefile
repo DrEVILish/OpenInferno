@@ -19,11 +19,11 @@ PPCB    ?= build/ppc
 MUSL_CC ?=
 AMU_QEMU ?= qemu-ppc -r 2.6.29 -cpu e300c3
 AMU_CHECK ?=
-SRCS    := util.c hw_devmem.c fpga_model.c pktq.c net.c mdns.c port.c arc.c flows_tx.c subscriber.c info.c settings.c \
+SRCS    := util.c hw_devmem.c hw_spi.c fpga_model.c pktq.c net.c mdns.c port.c arc.c flows_tx.c subscriber.c info.c settings.c \
            ptp.c clock.c ctl.c daemon.c
 OBJS_H  := $(SRCS:%.c=build/host/%.o)
 OBJS_P  := $(SRCS:%.c=$(PPCB)/%.o)
-TESTS   := test_qualification test_d4 test_unit test_inproc test_clock test_net test_edges test_hw test_stamp test_rx_poll test_tx_poll
+TESTS   := test_qualification test_d4 test_unit test_inproc test_clock test_net test_edges test_hw test_hw_spi test_stamp test_rx_poll test_tx_poll
 
 .PHONY: all ppc amu check check-unit check-ppc check-amu check-e2e check-cli clean
 all: build/host/inferno-portd
@@ -70,6 +70,12 @@ build/host/test_hw.o $(PPCB)/test_hw.o: src/hw_devmem.c
 build/host/test_hw: build/host/test_hw.o build/host/util.o
 	$(CC) -o $@ $^ -lm
 $(PPCB)/test_hw: $(PPCB)/test_hw.o $(PPCB)/util.o
+	$(PPCCC) -static -o $@ $^ -lm
+
+build/host/test_hw_spi.o $(PPCB)/test_hw_spi.o: src/hw_spi.c
+build/host/test_hw_spi: build/host/test_hw_spi.o build/host/util.o
+	$(CC) -o $@ $^ -lm
+$(PPCB)/test_hw_spi: $(PPCB)/test_hw_spi.o $(PPCB)/util.o
 	$(PPCCC) -static -o $@ $^ -lm
 
 build/host/test_%: build/host/test_%.o $(OBJS_H)

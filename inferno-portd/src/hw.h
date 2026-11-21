@@ -51,4 +51,9 @@ static inline int hw_offset_valid(uint32_t addr, uint32_t size)
 /* /dev/mem: phys = the window's physical address, size its length */
 hw_t *hw_devmem_open(uint64_t phys, uint32_t size);
 
+/* Linux spidev: 32-bit SPI register bridge (0xA5 write / 0x5A read, 16-bit byte addr).
+ * cs_path: optional active-high sysfs file toggled around each transfer (NULL = kernel CS).
+ * lock_path: optional flock(2) lock file shared with another process on the bus (NULL = none). */
+hw_t *hw_spi_open(const char *spidev_path, uint32_t speed_hz, const char *cs_path, const char *lock_path);
+
 #endif

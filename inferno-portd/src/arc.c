@@ -386,9 +386,20 @@ int arc_handle(port_t *p, const uint8_t *req, int len, uint8_t *out, int max)
         r = respond(req, bad ? 0xFFFF : 1, NULL, 0, out, max);
         break;
     }
-    case 0x3014: {   /* network-audio-controller's unsubscribe */
-        if (clen >= 6) { int k = get16(c + 4); if (k > 0 && k - 1 < p->channels) sub_unsubscribe(p, k - 1); }
-        r = respond(req, 1, NULL, 0, out, max);
+    case 0x3014: {   /* netaudio's remove subscriptions (proto_arc.rs remove_rx_subscriptions): u16 count, count x u32 id */
+        int n = clen >= 2 ? get16(c) : 0, any = 0;
+        if (n == 0 || 2 + 4 * n > clen) {   /* upstream clamps a count past the content; a short packet is refused here */
+            LOGW("ARC 0x3014: %d channel ids claimed in %d bytes: refused", n, clen);
+            r = respond(req, 0xFFFF, NULL, 0, out, max);
+            break;
+        }
+        for (int i = 0; i < n; i++) {
+            uint32_t id = get32(c + 2 + 4 * i);
+            if (id == 0 || id > (uint32_t)p->channels) { LOGW("ARC 0x3014: no RX channel %u", id); continue; }
+            sub_unsubscribe(p, (int)id - 1);
+            any = 1;
+        }
+        r = respond(req, any ? 1 : 0xFFFF, NULL, 0, out, max);
         break;
     }
     default: {

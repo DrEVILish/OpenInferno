@@ -602,6 +602,37 @@ static void test_save_fsync(void)
     CHECK(!strcmp(old, "old"));
     unlink(p.state_path); rmdir(dir); teardown();
 }
+/* ARC 0x3014 (proto_arc.rs remove_rx_subscriptions): u16 count, then u32 channel ids; nids of them are sent */
+static int unsub_req(int count, const uint32_t *ids, int nids, uint8_t *r, int max)
+{
+    uint8_t c[2 + 4 * 16] = { 0 };
+    put16(c, (uint16_t)count);
+    for (int i = 0; i < nids; i++) put32(c + 2 + 4 * i, ids[i]);
+    return arc(0x3014, c, 2 + 4 * nids, r, max);
+}
+static void test_bulk_unsubscribe(void)
+{
+    TEST("ARC 0x3014 bulk unsubscribe: count 2, ids 1 and 2 clear both");
+    setup();
+    uint8_t r[1500];
+    CHECK(sub_subscribe(&p, 0, "01", "FOH-1") == 0 && sub_subscribe(&p, 1, "02", "FOH-1") == 0);
+    CHECK(sub_subscribe(&p, 2, "03", "FOH-1") == 0);
+    static const uint32_t both[2] = { 1, 2 };
+    unsub_req(2, both, 2, r, sizeof(r));
+    CHECK(get16(r + 8) == 1); CHECK(!p.sub[0].active); CHECK(!p.sub[1].active); CHECK(p.sub[2].active);
+    TEST("ARC 0x3014: a count past the content (3 ids claimed, 2 sent) is refused, nothing changes");
+    CHECK(sub_subscribe(&p, 0, "01", "FOH-1") == 0 && sub_subscribe(&p, 1, "02", "FOH-1") == 0);
+    unsub_req(3, both, 2, r, sizeof(r));
+    CHECK(get16(r + 8) == 0xFFFF); CHECK(p.sub[0].active && p.sub[1].active && p.sub[2].active);
+    unsub_req(0xFFFF, both, 2, r, sizeof(r));
+    CHECK(get16(r + 8) == 0xFFFF); CHECK(p.sub[0].active && p.sub[1].active);
+    TEST("ARC 0x3014: count 0, or no valid RX channel id: an error reply; a valid id next to a bad one still clears");
+    unsub_req(0, both, 0, r, sizeof(r)); CHECK(get16(r + 8) == 0xFFFF);
+    static const uint32_t none[2] = { 0, 65 }, mixed[2] = { 65, 3 };
+    unsub_req(2, none, 2, r, sizeof(r)); CHECK(get16(r + 8) == 0xFFFF); CHECK(p.sub[0].active && p.sub[1].active);
+    unsub_req(2, mixed, 2, r, sizeof(r)); CHECK(get16(r + 8) == 1); CHECK(!p.sub[2].active && p.sub[0].active);
+    teardown();
+}
 static void test_small_builds(void)
 {
     uint8_t r[1500]; int code;
@@ -718,5 +749,6 @@ int main(void)
     test_mcast_channel_bounds();
     test_sub_names();
     test_save_fsync();
+    test_bulk_unsubscribe();
     return t_done("test_edges");
 }

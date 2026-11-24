@@ -78,6 +78,12 @@ build/host/test_hw_spi: build/host/test_hw_spi.o build/host/util.o
 $(PPCB)/test_hw_spi: $(PPCB)/test_hw_spi.o $(PPCB)/util.o
 	$(PPCCC) -static -o $@ $^ -lm
 
+# test_edges counts settings_save's fsync / rename calls: link-time wrappers (--wrap) in this test binary only
+build/host/test_edges: build/host/test_edges.o $(OBJS_H)
+	$(CC) -Wl,--wrap=fsync,--wrap=rename -o $@ $^ -lm
+$(PPCB)/test_edges: $(PPCB)/test_edges.o $(OBJS_P)
+	$(PPCCC) -static -Wl,--wrap=fsync,--wrap=rename -o $@ $^ -lm
+
 build/host/test_%: build/host/test_%.o $(OBJS_H)
 	$(CC) -o $@ $^ -lm
 $(PPCB)/test_%: $(PPCB)/test_%.o $(OBJS_P)

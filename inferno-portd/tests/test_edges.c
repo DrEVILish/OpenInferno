@@ -5,6 +5,7 @@
 #include "../src/fpga_model.h"
 #include "../src/regs.h"
 #include "../src/util.h"
+#include <errno.h>
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -566,6 +567,41 @@ static void test_sub_names(void)
     CHECK(flowctl_handle(&p, p.cfg_ip, q, n, o, sizeof(o)) >= RR_HDR && get16(o + 8) == 1);   /* the good one still works */
     teardown();
 }
+/* --wrap=fsync / --wrap=rename (Makefile): count the calls; fs_fail makes fsync fail with EIO */
+int __real_fsync(int fd); int __wrap_fsync(int fd); int __real_rename(const char *a, const char *b);
+int __wrap_rename(const char *a, const char *b);
+static int fs_calls, fs_at_rename = -1, fs_fail, renames;
+int __wrap_fsync(int fd)
+{
+    fs_calls++;
+    if (fs_fail) { errno = EIO; return -1; }
+    return __real_fsync(fd);
+}
+int __wrap_rename(const char *a, const char *b) { renames++; fs_at_rename = fs_calls; return __real_rename(a, b); }
+static void test_save_fsync(void)
+{
+    TEST("settings_save: fsync of the new file before the rename, then of the directory");
+    setup();
+    char dir[] = "/tmp/openinferno-fsync-XXXXXX", tmp[300];
+    CHECK(mkdtemp(dir) != NULL);
+    snprintf(p.state_path, sizeof(p.state_path), "%s/state", dir);
+    snprintf(tmp, sizeof(tmp), "%s.tmp", p.state_path);
+    fs_calls = renames = 0; fs_at_rename = -1; fs_fail = 0;
+    CHECK(settings_save(&p) == 0);
+    CHECKF(fs_at_rename == 1 && renames == 1, "fsync calls before the rename: %d, renames %d", fs_at_rename, renames);
+    CHECKF(fs_calls == 2, "fsync calls: %d", fs_calls);
+    TEST("settings_save: a failing fsync keeps the old state file, removes the temporary one, no rename");
+    FILE *f = fopen(p.state_path, "w"); CHECK(f != NULL);
+    if (f) { fputs("old", f); fclose(f); }
+    fs_calls = renames = 0; fs_fail = 1;
+    CHECK(settings_save(&p) == -1);
+    fs_fail = 0;
+    CHECK(fs_calls >= 1); CHECK(renames == 0); CHECK(access(tmp, F_OK) != 0);
+    char old[8] = { 0 }; f = fopen(p.state_path, "r"); CHECK(f != NULL);
+    if (f) { CHECK(fread(old, 1, sizeof(old) - 1, f) == 3); fclose(f); }
+    CHECK(!strcmp(old, "old"));
+    unlink(p.state_path); rmdir(dir); teardown();
+}
 static void test_small_builds(void)
 {
     uint8_t r[1500]; int code;
@@ -681,5 +717,6 @@ int main(void)
     test_channel_pages();
     test_mcast_channel_bounds();
     test_sub_names();
+    test_save_fsync();
     return t_done("test_edges");
 }

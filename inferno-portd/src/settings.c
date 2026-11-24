@@ -5,8 +5,11 @@
 #include "portd.h"
 #include "util.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 int settings_save(port_t *p)
 {
@@ -31,10 +34,21 @@ int settings_save(port_t *p)
         for (int c = 0; c < t->nch; c++) fprintf(f, "%c%d", c ? ',' : ' ', t->ch[c] + 1);
         fprintf(f, "\n");
     }
-    int failed = ferror(f);
-    if (fclose(f)) failed = 1;
-    if (failed) { LOGW("cannot finish %s", tmp); remove(tmp); return -1; }
-    if (rename(tmp, p->state_path)) { LOGW("cannot replace %s", p->state_path); return -1; }
+    /* the data reaches the disk before the rename makes it the state file: a power cut keeps the old or the new one */
+    int failed = ferror(f) || fflush(f) || fsync(fileno(f));
+    int err = errno;
+    if (fclose(f) && !failed) { failed = 1; err = errno; }
+    if (failed) { LOGW("cannot finish %s: %s", tmp, strerror(err)); remove(tmp); return -1; }
+    if (rename(tmp, p->state_path)) { LOGW("cannot replace %s: %s", p->state_path, strerror(errno)); remove(tmp); return -1; }
+    char dir[300];   /* and the rename reaches it with the directory */
+    snprintf(dir, sizeof(dir), "%s", p->state_path);
+    char *sl = strrchr(dir, '/');
+    if (!sl) snprintf(dir, sizeof(dir), ".");
+    else if (sl == dir) dir[1] = 0;
+    else *sl = 0;
+    int dfd = open(dir, O_RDONLY | O_DIRECTORY);
+    if (dfd < 0 || fsync(dfd)) LOGW("cannot sync directory %s: %s", dir, strerror(errno));   /* the new file is in place */
+    if (dfd >= 0) close(dfd);
     return 0;
 }
 

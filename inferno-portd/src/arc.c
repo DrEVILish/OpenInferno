@@ -355,6 +355,11 @@ int arc_handle(port_t *p, const uint8_t *req, int len, uint8_t *out, int max)
         break;
     }
     case 0x2320: r = respond(req, 0x30, NULL, 0, out, max); break;
+    case 0x2204: {   /* TX flow labels (arc_server.rs, dev d115ce5): none kept, an empty page (02 = page size marker, 00 records) */
+        static const uint8_t empty[2] = { 0x02, 0x00 };
+        r = respond(req, 1, empty, 2, out, max);
+        break;
+    }
     case 0x3200: {   /* query RX flows */
         int st = start_index(c, clen);
         if (st < 0) { r = respond(req, 1, NULL, 0, out, max); break; }

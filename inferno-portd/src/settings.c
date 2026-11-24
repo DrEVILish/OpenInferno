@@ -69,11 +69,16 @@ int settings_apply_line(port_t *p, const char *line, int at_start)
     } else if (!strcmp(key, "mcast") && sscanf(line, "%*s %d %95s", &k, a) == 2) {
         int16_t ch[MAXFCH];
         int n = 0;
-        for (char *s = a; *s && n < MAXFCH;) {
-            ch[n++] = (int16_t)(atoi(s) - 1);
-            char *c = strchr(s, ',');
-            if (!c) break;
-            s = c + 1;
+        for (char *s = a;;) {   /* the ids, 1-based, 0 = an unused slot; the range check is txflow_create_mcast's */
+            char *e;
+            long v = strtol(s, &e, 10);
+            if (e == s || (*e && *e != ',') || v < 0 || v > 32767 || n == MAXFCH) {
+                LOGW("mcast %d refused: bad channel list %s", k, a);
+                return -1;
+            }
+            ch[n++] = (int16_t)(v - 1);
+            if (!*e) break;
+            s = e + 1;
         }
         return txflow_create_mcast(p, k - 1, ch, n);
     } else return -1;

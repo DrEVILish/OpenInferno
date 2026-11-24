@@ -9,6 +9,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
+int settings_apply_line(port_t *p, const char *line, int at_start);
 
 static uint64_t now = 5000000000ull;
 static uint64_t vnow(void) { return now; }
@@ -440,6 +441,63 @@ static void test_channel_pages(void)
     check_channel_pages(0x3000, p.channels, 16, 20);
     teardown();
 }
+/* the WARN log of a block of code: log_begin(); ...; log_end(buf) holds what it wrote to stderr */
+static FILE *log_tf; static int log_fd = -1;
+static void log_begin(void)
+{
+    fflush(stderr); log_tf = tmpfile(); log_fd = dup(2);
+    if (log_tf) dup2(fileno(log_tf), 2);
+    g_log_level = LOG_WARN;
+}
+static const char *log_end(char *buf, size_t sz)
+{
+    fflush(stderr); g_log_level = LOG_ERR; buf[0] = 0;
+    if (log_fd >= 0) { dup2(log_fd, 2); close(log_fd); log_fd = -1; }
+    if (log_tf) { rewind(log_tf); size_t n = fread(buf, 1, sz - 1, log_tf); buf[n] = 0; fclose(log_tf); log_tf = NULL; }
+    return buf;
+}
+/* ARC 0x2201: one multicast flow id with the wire channel ids ids[0..nch) (1-based, 0 = unused) */
+static int mcast_req(uint16_t id, const uint16_t *ids, int nch, uint8_t *r, int max)
+{
+    uint8_t c[54] = { 0 };
+    c[1] = 1; put16(c + 2, RR_HDR + 4);
+    uint8_t *d = c + 4;
+    put16(d, id); put16(d + 2, 2); put16(d + 14, (uint16_t)nch);
+    for (int k = 0; k < nch; k++) put16(d + 16 + 2 * k, ids[k]);
+    return arc(0x2201, c, 4 + 16 + 2 * nch + 2, r, max);
+}
+static void test_mcast_channel_bounds(void)
+{
+    TEST("ARC 0x2201 multicast flow with TX channel id 65 / 1000 (the port has 64): refused, no flow, logged");
+    setup();
+    uint8_t r[1500]; char log[4096];
+    static const uint16_t bad65[2] = { 1, 65 }, bad1000[1] = { 1000 }, good[2] = { 1, 64 };
+    log_begin(); mcast_req(1, bad65, 2, r, sizeof(r)); log_end(log, sizeof(log));
+    CHECK(get16(r + 8) == 0xFFFF); CHECK(!p.tx[0].used);
+    CHECKF(strstr(log, "channel id 65") != NULL, "log: %s", log);
+    log_begin(); mcast_req(2, bad1000, 1, r, sizeof(r)); log_end(log, sizeof(log));
+    CHECK(get16(r + 8) == 0xFFFF); CHECK(!p.tx[1].used);
+    CHECKF(strstr(log, "channel id 1000") != NULL, "log: %s", log);
+    mcast_req(3, good, 2, r, sizeof(r));
+    CHECK(get16(r + 8) == 1 && p.tx[2].used && p.tx[2].ch[1] == 63);   /* the last channel still works */
+    TEST("state-file mcast line with an out-of-range TX channel: refused, no flow, logged");
+    log_begin(); int rc = settings_apply_line(&p, "mcast 4 1,65\n", 1); log_end(log, sizeof(log));
+    CHECK(rc == -1); CHECK(!p.tx[3].used);
+    CHECKF(strstr(log, "channel id 65") != NULL, "log: %s", log);
+    rc = settings_apply_line(&p, "mcast 5 -7\n", 1);
+    CHECK(rc == -1); CHECK(!p.tx[4].used);
+    CHECK(settings_apply_line(&p, "mcast 5 1,2x\n", 1) == -1 && !p.tx[4].used);   /* strict numbers */
+    TEST("ctl verbs mcast 1 30000 / mcast 1 65 at 64 channels: err, no flow, logged; mcastdel finds nothing");
+    char out[256];
+    log_begin(); rc = ctl_exec(&p, "mcast 1 30000", out, sizeof(out)); log_end(log, sizeof(log));
+    CHECK(rc == -1 && !strncmp(out, "err", 3)); CHECK(!p.tx[0].used);
+    CHECKF(strstr(log, "channel id 30000") != NULL, "log: %s", log);
+    log_begin(); rc = ctl_exec(&p, "mcast 1 65", out, sizeof(out)); log_end(log, sizeof(log));
+    CHECK(rc == -1 && !strncmp(out, "err", 3)); CHECK(!p.tx[0].used);
+    CHECKF(strstr(log, "channel id 65") != NULL, "log: %s", log);
+    CHECK(ctl_exec(&p, "mcastdel 1", out, sizeof(out)) == -1);
+    teardown();
+}
 static void test_small_builds(void)
 {
     uint8_t r[1500]; int code;
@@ -553,5 +611,6 @@ int main(void)
     test_cancel_pending(); test_latency_transitions(); test_latency_fit(); test_rate_transitions(); test_distinct_discovery_clients();
     test_small_builds();
     test_channel_pages();
+    test_mcast_channel_bounds();
     return t_done("test_edges");
 }

@@ -696,6 +696,17 @@ static void test_mcast_format_bounds(void)
         teardown();
     }
 }
+static void test_arc_tx_flow_labels(void)
+{
+    TEST("ARC 0x2204 (TX flow labels, first page 0001 0001 0000): code 1, an empty page 02 00");
+    setup();
+    uint8_t r[1500];
+    static const uint8_t pg[6] = { 0, 1, 0, 1, 0, 0 };
+    static const uint8_t want[12] = { 0x27, 0xff, 0, 12, 0x12, 0x34, 0x22, 0x04, 0, 1, 0x02, 0x00 };
+    int n = arc(0x2204, pg, 6, r, sizeof(r));
+    CHECKF(n == 12 && !memcmp(r, want, 12), "%d bytes, code %04x", n, n >= RR_HDR ? get16(r + 8) : 0);
+    teardown();
+}
 static void test_small_builds(void)
 {
     uint8_t r[1500]; int code;
@@ -814,5 +825,6 @@ int main(void)
     test_save_fsync();
     test_bulk_unsubscribe();
     test_mcast_format_bounds();
+    test_arc_tx_flow_labels();
     return t_done("test_edges");
 }

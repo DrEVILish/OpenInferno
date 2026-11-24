@@ -370,17 +370,20 @@ int arc_handle(port_t *p, const uint8_t *req, int len, uint8_t *out, int max)
         break;
     }
     case 0x3010: {   /* subscribe / unsubscribe: {u16 local id, u16 tx channel name offset, u16 tx host offset} */
-        int n = clen >= 2 ? c[1] : 0;
+        int n = clen >= 2 ? c[1] : 0, bad = 0;
         for (int i = 0; i < n && 2 + 6 * i + 6 <= clen; i++) {
             const uint8_t *it = c + 2 + 6 * i;
             uint16_t id = get16(it), cho = get16(it + 2), ho = get16(it + 4);
             if (!id || id - 1 >= p->channels) continue;
             if (cho && ho) {
-                char ch[64], host[64];
-                if (cstr(c, clen, cho, ch, sizeof(ch)) && cstr(c, clen, ho, host, sizeof(host))) sub_subscribe(p, id - 1, ch, host);
+                char ch[64], host[96];   /* longer than the limits: sub_subscribe refuses an over-long name, never truncates */
+                if (!cstr(c, clen, cho, ch, sizeof(ch)) || !cstr(c, clen, ho, host, sizeof(host))) {
+                    LOGW("ARC 0x3010: RX %u: name offsets %u / %u outside the request", id, cho, ho);
+                    bad = 1;
+                } else if (sub_subscribe(p, id - 1, ch, host)) bad = 1;
             } else sub_unsubscribe(p, id - 1);
         }
-        r = respond(req, 1, NULL, 0, out, max);
+        r = respond(req, bad ? 0xFFFF : 1, NULL, 0, out, max);
         break;
     }
     case 0x3014: {   /* network-audio-controller's unsubscribe */

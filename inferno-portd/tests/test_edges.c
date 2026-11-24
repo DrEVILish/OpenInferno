@@ -369,7 +369,7 @@ static int setup_caps(uint32_t caps, int fs)
 }
 static int arc(uint16_t op, const uint8_t *c, int clen, uint8_t *r, int max)
 {
-    uint8_t q[64];
+    uint8_t q[1500];
     return arc_handle(&p, q, rr_make(q, 0x27ff, 0x1234, op, 0, c, clen), r, max);
 }
 /* _netaudio-chan answers to one unicast PTR query (one per default-named TX channel) */
@@ -498,6 +498,74 @@ static void test_mcast_channel_bounds(void)
     CHECK(ctl_exec(&p, "mcastdel 1", out, sizeof(out)) == -1);
     teardown();
 }
+/* ARC 0x3010: subscribe RX channel id (1-based) to ch@host */
+static int sub_req(int id, const char *ch, const char *host, uint8_t *r, int max)
+{
+    uint8_t c[400] = { 0 };
+    size_t lc = strlen(ch) + 1, lh = strlen(host) + 1;
+    c[1] = 1;
+    put16(c + 2, (uint16_t)id); put16(c + 4, RR_HDR + 8); put16(c + 6, (uint16_t)(RR_HDR + 8 + lc));
+    memcpy(c + 8, ch, lc); memcpy(c + 8 + lc, host, lh);
+    return arc(0x3010, c, (int)(8 + lc + lh), r, max);
+}
+static void test_sub_names(void)
+{
+    TEST("ARC 0x3010 with a TX channel name holding \"\\n\" + \"deskname x\": refused, not saved, nothing injected");
+    setup();
+    uint8_t r[1500]; char log[4096];
+    log_begin(); sub_req(1, "Kick\ndeskname x", "FOH-1", r, sizeof(r)); log_end(log, sizeof(log));
+    CHECK(get16(r + 8) == 0xFFFF); CHECK(!p.sub[0].active);
+    CHECKF(strstr(log, "subscribe RX 1 refused") != NULL, "log: %s", log);
+    char dir[] = "/tmp/openinferno-sub-XXXXXX";
+    CHECK(mkdtemp(dir) != NULL);
+    snprintf(p.state_path, sizeof(p.state_path), "%s/state", dir);
+    CHECK(settings_save(&p) == 0);
+    char st[8192] = { 0 }; FILE *f = fopen(p.state_path, "r"); CHECK(f != NULL);
+    if (f) { size_t n = fread(st, 1, sizeof(st) - 1, f); st[n] = 0; fclose(f); }
+    CHECKF(!strstr(st, "deskname x") && !strstr(st, "Kick"), "state file: %s", st);
+    char desk[32]; snprintf(desk, sizeof(desk), "%s", p.desk);
+    CHECK(settings_load(&p) == 0);
+    CHECK(!strcmp(p.desk, desk) && !p.sub[0].active);
+    unlink(p.state_path); rmdir(dir);
+    TEST("ARC 0x3010 names: over-length, '@', '.', '=', control bytes refused (never truncated); 31 / 63 bytes pass");
+    char ch32[40], host64[80], ch31[40], host63[80];
+    memset(ch32, 'c', 32); ch32[32] = 0; memset(ch31, 'c', 31); ch31[31] = 0;
+    memset(host64, 'h', 64); host64[64] = 0; memset(host63, 'h', 63); host63[63] = 0;
+    sub_req(2, ch32, "FOH-1", r, sizeof(r)); CHECK(get16(r + 8) == 0xFFFF && !p.sub[1].active);
+    sub_req(2, "01", host64, r, sizeof(r)); CHECK(get16(r + 8) == 0xFFFF && !p.sub[1].active);
+    sub_req(2, "a@b", "FOH-1", r, sizeof(r)); CHECK(get16(r + 8) == 0xFFFF && !p.sub[1].active);
+    sub_req(2, "01", "FOH@1", r, sizeof(r)); CHECK(get16(r + 8) == 0xFFFF && !p.sub[1].active);
+    sub_req(2, "a.b", "FOH-1", r, sizeof(r)); CHECK(get16(r + 8) == 0xFFFF && !p.sub[1].active);
+    sub_req(2, "a=b", "FOH-1", r, sizeof(r)); CHECK(get16(r + 8) == 0xFFFF && !p.sub[1].active);
+    sub_req(2, "01", "foh.local", r, sizeof(r)); CHECK(get16(r + 8) == 0xFFFF && !p.sub[1].active);
+    sub_req(2, "01", "FOH 1", r, sizeof(r)); CHECK(get16(r + 8) == 0xFFFF && !p.sub[1].active);
+    sub_req(2, "a\tb", "FOH-1", r, sizeof(r)); CHECK(get16(r + 8) == 0xFFFF && !p.sub[1].active);
+    sub_req(2, ch31, host63, r, sizeof(r));
+    CHECK(get16(r + 8) == 1 && p.sub[1].active && !strcmp(p.sub[1].txch, ch31) && !strcmp(p.sub[1].txhost, host63));
+    sub_req(3, "Kick In", "Dante-AVIO-1a2b3c", r, sizeof(r));   /* a space in a channel name is fine */
+    CHECK(get16(r + 8) == 1 && p.sub[2].active);
+    TEST("state-file sub lines go through the same check");
+    CHECK(settings_apply_line(&p, "sub 4 a=b@FOH-1\n", 1) == -1 && !p.sub[3].active);
+    CHECK(settings_apply_line(&p, "sub 4 01@foh.local\n", 1) == -1 && !p.sub[3].active);
+    CHECK(settings_apply_line(&p, "sub 4 01@FOH-1\n", 1) == 0 && p.sub[3].active);
+    TEST("flow request 0x0100 with a 64-byte host name: FC_BAD_REQUEST, no flow");
+    uint8_t q[600], o[64]; uint16_t chs[1] = { 1 };
+    char fl[80]; memset(fl, 'h', 64); fl[64] = 0;
+    int n = fc_build_request(&p, 1, 48000, 24, 16, chs, 1, 50000, fl, q, sizeof(q));
+    int foff = RR_HDR + 16 + 2 + 6;
+    put16(q + RR_HDR, get16(q + foff + 2));   /* the host offset points at the 64-byte name */
+    int used0 = 0; for (int i = 0; i < NTXF; i++) used0 += p.tx[i].used;
+    CHECK(flowctl_handle(&p, p.cfg_ip, q, n, o, sizeof(o)) >= RR_HDR);
+    CHECK(get16(o + 8) == 0x0302);
+    int used1 = 0; for (int i = 0; i < NTXF; i++) used1 += p.tx[i].used; CHECK(used1 == used0);
+    TEST("flow request 0x0100 with a host offset past the packet: FC_BAD_REQUEST");
+    n = fc_build_request(&p, 2, 48000, 24, 16, chs, 1, 50000, "ok", q, sizeof(q));
+    put16(q + RR_HDR, (uint16_t)(n + 10));
+    CHECK(flowctl_handle(&p, p.cfg_ip, q, n, o, sizeof(o)) >= RR_HDR && get16(o + 8) == 0x0302);
+    n = fc_build_request(&p, 3, 48000, 24, 16, chs, 1, 50000, "ok", q, sizeof(q));
+    CHECK(flowctl_handle(&p, p.cfg_ip, q, n, o, sizeof(o)) >= RR_HDR && get16(o + 8) == 1);   /* the good one still works */
+    teardown();
+}
 static void test_small_builds(void)
 {
     uint8_t r[1500]; int code;
@@ -612,5 +680,6 @@ int main(void)
     test_small_builds();
     test_channel_pages();
     test_mcast_channel_bounds();
+    test_sub_names();
     return t_done("test_edges");
 }

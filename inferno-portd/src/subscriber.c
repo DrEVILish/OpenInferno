@@ -201,9 +201,27 @@ static void rx_free(port_t *p, int f, int stop)
     memset(r, 0, sizeof(*r));
 }
 
+/* 1..max bytes; a device name is one DNS label (A-Z a-z 0-9 -), a channel name has no control bytes and none of . = @
+ * (they split the "<channel>@<device>" mDNS name and the TXT keys; a newline would also split a state-file line) */
+static int name_ok(const char *s, size_t max, int label)
+{
+    size_t n = strlen(s);
+    if (n < 1 || n > max) return 0;
+    for (const unsigned char *c = (const unsigned char *)s; *c; c++) {
+        int alnum = (*c >= '0' && *c <= '9') || (*c >= 'A' && *c <= 'Z') || (*c >= 'a' && *c <= 'z');
+        if (label ? !(alnum || *c == '-') : (*c < 0x20 || *c == 0x7F || *c == '.' || *c == '=' || *c == '@')) return 0;
+    }
+    return 1;
+}
+
 int sub_subscribe(port_t *p, int k, const char *txch, const char *txhost)
 {
-    if (k < 0 || k >= p->channels || !txch[0] || !txhost[0]) return -1;
+    if (k < 0 || k >= p->channels) return -1;
+    if (!name_ok(txch, sizeof(p->sub[k].txch) - 1, 0) || !name_ok(txhost, sizeof(p->sub[k].txhost) - 1, 1)) {
+        LOGW("subscribe RX %d refused: TX channel name (%zu bytes) must be 1..31 bytes without control bytes or . = @, "
+             "device name (%zu bytes) 1..63 of A-Z a-z 0-9 -", k + 1, strlen(txch), strlen(txhost));
+        return -1;
+    }
     sub_t *s = &p->sub[k];
     if (s->active && !strcmp(s->txch, txch) && !strcasecmp(s->txhost, txhost)) return 0;
     if (s->active) sub_unsubscribe(p, k);

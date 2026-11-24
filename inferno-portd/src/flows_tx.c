@@ -162,9 +162,13 @@ int flowctl_handle(port_t *p, uint32_t sip, const uint8_t *req, int len, uint8_t
         if (nch < 1 || foff + 4 > clen) { code = FC_BAD_REQUEST; break; }
         int fpp = get16(c + foff);
         uint16_t flow_off = get16(c + foff + 2);
-        char host[64] = "", flow[64] = "";
-        str_at(req, (size_t)len, host_off, host, sizeof(host));
-        str_at(req, (size_t)len, flow_off, flow, sizeof(flow));
+        char host[65] = "", flow[65] = "";   /* one past the 63-byte limit: an over-long name is refused, not truncated */
+        if (!str_at(req, (size_t)len, host_off, host, sizeof(host)) || !str_at(req, (size_t)len, flow_off, flow, sizeof(flow)) ||
+            strlen(host) > 63 || strlen(flow) > 63) {
+            LOGW("flow request refused: host / flow name at %u / %u unreadable or over 63 bytes", host_off, flow_off);
+            code = FC_BAD_REQUEST;
+            break;
+        }
         if ((int)rem_off + 8 > len) return 0;
         uint16_t rport = get16(req + rem_off + 2);
         uint32_t rip = get32(req + rem_off + 4);

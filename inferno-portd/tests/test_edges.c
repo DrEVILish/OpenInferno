@@ -633,6 +633,69 @@ static void test_bulk_unsubscribe(void)
     unsub_req(2, mixed, 2, r, sizeof(r)); CHECK(get16(r + 8) == 1); CHECK(!p.sub[2].active && p.sub[0].active);
     teardown();
 }
+/* one mDNS response (PTR + SRV + TXT + A) from 192.0.2.20, as a peer's announcement */
+static void mdns_answer(const mdns_svc_t *s)
+{
+    uint8_t frame[1500] = {0}; uint8_t *ip = frame + 14, *u = ip + 20, *d = u + 8;
+    int pos = mdns_build_response(s, IP4(192,0,2,20), 0, -1, d, 1400);
+    CHECK(pos > 0);
+    put16(frame + 12,0x0800); ip[0] = 0x45; ip[9] = 17; put16(ip + 2,(uint16_t)(28 + pos));
+    put32(ip + 12,IP4(192,0,2,20)); put32(ip + 16,MDNS_GROUP); put16(ip + 10,inet_csum(ip,20,0));
+    put16(u,5353); put16(u + 2,5353); put16(u + 4,(uint16_t)(8 + pos));
+    stamp_t ts = {0}; net_input(p.net,frame,42 + pos,&ts);
+}
+/* FOH-1 offers TX channel 01 in multicast bundle 1 (239.255.1.1:4321, 8 channels); RX 1 subscribes to it.
+ * chan_fpp / b_enc / b_fpp: the TXT values under test (NULL = left out). Returns the RXW0 of RX flow 1. */
+static uint32_t bundle_offer(const char *chan_fpp, const char *b_enc, const char *b_fpp)
+{
+    mdns_svc_t c, b;
+    memset(&c, 0, sizeof(c)); memset(&b, 0, sizeof(b));
+    strcpy(c.inst, "01@FOH-1"); strcpy(c.type, "_netaudio-chan"); c.port = 4440; c.ttl = 120;
+    strcpy(c.txt[c.ntxt++], "id=1"); strcpy(c.txt[c.ntxt++], "nchan=8"); strcpy(c.txt[c.ntxt++], "enc=24");
+    strcpy(c.txt[c.ntxt++], "latency_ns=1000000"); strcpy(c.txt[c.ntxt++], "b.1=1");
+    if (chan_fpp) snprintf(c.txt[c.ntxt++], 100, "fpp=%s", chan_fpp);
+    strcpy(b.inst, "1@FOH-1"); strcpy(b.type, "_netaudio-bund"); b.port = 4321; b.ttl = 120;
+    strcpy(b.txt[b.ntxt++], "a.0=239.255.1.1"); strcpy(b.txt[b.ntxt++], "p.0=4321"); strcpy(b.txt[b.ntxt++], "nchan=8");
+    strcpy(b.txt[b.ntxt++], "latency_ns=1000000");
+    if (b_enc) snprintf(b.txt[b.ntxt++], 100, "enc=%s", b_enc);
+    if (b_fpp) snprintf(b.txt[b.ntxt++], 100, "fpp=%s", b_fpp);
+    mdns_answer(&c); mdns_answer(&b);
+    CHECK(sub_subscribe(&p, 0, "01", "FOH-1") == 0);
+    for (int i = 0; i < 300; i++) { now += 10000000ull; port_tick(&p, now); }
+    return tbl_read(p.hw, TBL_RX(0, 0));
+}
+static void test_mcast_format_bounds(void)
+{
+    char log[4096];
+    TEST("a multicast bundle with enc=24, fpp=16: RX flow 1 joins it (RXW0 bps 3, 8 channels)");
+    setup();
+    uint32_t w0 = bundle_offer("16,2", "24", "16");
+    CHECKF(p.rx[0].used && p.rx[0].multicast && w0 == RXW0(3, 8, 1), "used %d multicast %d RXW0 %08x",
+           p.rx[0].used, p.rx[0].multicast, w0);
+    teardown();
+    static const struct { const char *cf, *enc, *bf, *why; } bad[] = {
+        { "16,2", "40", "16", "enc 40" },       /* bps 5 does not fit RXW0's 3-bit field as a format */
+        { "16,2", "20", "16", "enc 20" },
+        { "16,2", "24", "0", "fpp 0" },         /* the bundle's packets */
+        { "16,2", "24", "99999", "fpp 99999" },
+        { "0", "24", "16", "fpp 0" },           /* the channel's advertised range */
+        { "99999", "24", "16", "fpp 99999" },
+        { "16,64", "24", "16", "fpp 64" },
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        char t[160];
+        snprintf(t, sizeof(t), "multicast bundle with %s (channel fpp=%s, bundle enc=%s fpp=%s): refused, RXW0 unchanged, logged",
+                 bad[i].why, bad[i].cf, bad[i].enc, bad[i].bf);
+        TEST(t); setup();
+        log_begin(); w0 = bundle_offer(bad[i].cf, bad[i].enc, bad[i].bf); log_end(log, sizeof(log));
+        CHECKF(w0 == 0 && !p.rx[0].used, "RXW0 %08x used %d", w0, p.rx[0].used);
+        CHECK(p.sub[0].active && p.sub[0].flow == -1 && p.sub[0].status == SUB_TX_FAIL);
+        CHECKF(strstr(log, bad[i].why) != NULL, "log: %s", log);
+        char *again = strstr(log, bad[i].why);
+        CHECKF(again && !strstr(again + 1, bad[i].why), "logged more than once in 3 s: %s", log);
+        teardown();
+    }
+}
 static void test_small_builds(void)
 {
     uint8_t r[1500]; int code;
@@ -750,5 +813,6 @@ int main(void)
     test_sub_names();
     test_save_fsync();
     test_bulk_unsubscribe();
+    test_mcast_format_bounds();
     return t_done("test_edges");
 }

@@ -256,7 +256,8 @@ void sub_unsubscribe(port_t *p, int k)
 typedef struct {
     uint32_t ip;
     uint16_t port, id, dbcp1;
-    int nchan, bits, fpp_min, fpp_max, bundle, cib;
+    int nchan, bits, bundle, cib;
+    long fpp_min, fpp_max;
     uint32_t latency_ns;
 } advch_t;
 
@@ -290,8 +291,8 @@ static int resolve_chan(port_t *p, const sub_t *s, advch_t *a)
     a->fpp_max = 32; a->fpp_min = 1;
     if (mdns_txt(p->mdns, fq, "fpp", b, sizeof(b), NULL)) {
         char *c = strchr(b, ',');
-        a->fpp_max = atoi(b);
-        a->fpp_min = c ? atoi(c + 1) : a->fpp_max;
+        a->fpp_max = strtol(b, NULL, 10);
+        a->fpp_min = c ? strtol(c + 1, NULL, 10) : a->fpp_max;
     }
     a->bundle = 0;
     /* a "b.N=k" key: the channel is in multicast bundle N at position k */
@@ -335,6 +336,23 @@ static int latency_ok(port_t *p, int k, uint32_t their_ns)
     return 0;
 }
 
+/* a format we can receive (mdns_client.rs check_advertised_format): enc 16/24/32 (RXW0's bps is 2..4), an fpp range
+ * fpp_lo..fpp_hi whose low end is 1..FPP_MAX_ADV (the unicast request takes the low end when the high end is clamped).
+ * A refusal is logged once per status change and retried in 10 s, like a latency refusal. */
+static int format_ok(port_t *p, int k, const char *what, long enc, long fpp_lo, long fpp_hi)
+{
+    int fpp_ok = fpp_lo >= 1 && fpp_lo <= FPP_MAX_ADV && fpp_hi >= fpp_lo;
+    long bad_fpp = fpp_lo < 1 || fpp_lo > FPP_MAX_ADV ? fpp_lo : fpp_hi;
+    if ((enc == 16 || enc == 24 || enc == 32) && fpp_ok) return 1;
+    if (p->sub[k].status != SUB_TX_FAIL) {
+        if (!fpp_ok) LOGW("RX %d: %s advertises fpp %ld, not 1..%d: not subscribed", k + 1, what, bad_fpp, FPP_MAX_ADV);
+        else LOGW("RX %d: %s advertises enc %ld, not 16, 24 or 32: not subscribed", k + 1, what, enc);
+    }
+    set_status(p, k, SUB_TX_FAIL);
+    p->sub[k].next_try = g_now() + 10000000000ull;
+    return 0;
+}
+
 static void attach_mcast(port_t *p, int k, const advch_t *a)
 {
     sub_t *s = &p->sub[k];
@@ -342,12 +360,14 @@ static void attach_mcast(port_t *p, int k, const advch_t *a)
     snprintf(fq, sizeof(fq), "%d@%s._netaudio-bund._udp.local", a->bundle, s->txhost);
     uint32_t grp;
     if (!mdns_txt(p->mdns, fq, "a.0", b, sizeof(b), NULL) || parse_ip(b, &grp)) { mdns_query(p->mdns, fq, 16); return; }
-    long port = 0, nch = 0, enc = 24, lat = 1000000;
+    long port = 0, nch = 0, enc = 24, lat = 1000000, fpp = 1;   /* no fpp key: not checked */
     txt_int(p, fq, "p.0", &port);
     txt_int(p, fq, "nchan", &nch);
     if (!txt_int(p, fq, "enc", &enc)) txt_int(p, fq, "en", &enc);
     txt_int(p, fq, "latency_ns", &lat);
+    txt_int(p, fq, "fpp", &fpp);
     if (nch < 1 || nch > p->caps_fch || a->cib >= nch) { LOGW("bundle %s: %ld channels unsupported", fq, nch); return; }
+    if (!format_ok(p, k, fq, enc, fpp, fpp)) return;
     if (!latency_ok(p, k, (uint32_t)lat)) return;
     int f = -1;
     for (int i = 0; i < NRXF; i++) if (p->rx[i].used && p->rx[i].multicast && p->rx[i].group == grp && p->rx[i].gport == port) f = i;
@@ -394,7 +414,14 @@ static void resolve(port_t *p, uint64_t now)
         if (!strcasecmp(s->txhost, p->name)) { s->next_try = now + 5000000000ull; continue; }   /* ourselves */
         advch_t a;
         if (!resolve_chan(p, s, &a)) { s->next_try = now + 1000000000ull; continue; }
-        if (a.bundle) { attach_mcast(p, k, &a); if (s->flow < 0 && s->status != SUB_LATENCY) s->next_try = now + 1000000000ull; continue; }
+        char what[200];
+        snprintf(what, sizeof(what), "%s@%s", s->txch, s->txhost);
+        if (!format_ok(p, k, what, a.bits, a.fpp_min, a.fpp_max)) continue;
+        if (a.bundle) {
+            attach_mcast(p, k, &a);
+            if (s->flow < 0 && s->status != SUB_LATENCY && s->status != SUB_TX_FAIL) s->next_try = now + 1000000000ull;
+            continue;
+        }
         if (!latency_ok(p, k, a.latency_ns)) continue;
         /* an existing flow from the same server: the channel already in a free slot, or a free slot to update */
         int done = 0, hold = 0;
@@ -463,8 +490,7 @@ static void resolve(port_t *p, uint64_t now)
         r->used = 1; r->state = 0; r->rx_port = (uint16_t)port;
         scopy(r->host, sizeof(r->host), p->sub[batch[i]].txhost);
         r->ctl_ip = a0->ip; r->ctl_port = a0->port; r->dbcp1 = a0->dbcp1;
-        r->bps = a0->bits / 8;
-        if (r->bps < 2 || r->bps > 4) r->bps = 3;
+        r->bps = a0->bits / 8;   /* 2..4: format_ok */
         for (int c = 0; c < MAXFCH; c++) r->col[c] = -1;
         for (int j = i; j < nb && r->nch < per; j++) {
             if (taken[j] || ads[j].ip != a0->ip || ads[j].port != a0->port || ads[j].bits != a0->bits) continue;

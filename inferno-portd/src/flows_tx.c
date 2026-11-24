@@ -258,6 +258,11 @@ static void rev_name(uint32_t ip, char *out, size_t sz)
 int txflow_create_mcast(port_t *p, int f, const int16_t *ch, int nch)
 {
     if (f < 0 || f >= p->caps_txf || p->tx[f].used || nch < 1 || nch > p->caps_fch) return -1;
+    for (int c = 0; c < nch; c++)   /* -1 = an unused slot; anything else indexes txname[] and the TX table */
+        if (ch[c] != -1 && (ch[c] < 0 || ch[c] >= port_tx_channels(p))) {
+            LOGW("multicast flow %d refused: TX channel id %d is not 1..%d", f + 1, ch[c] + 1, port_tx_channels(p));
+            return -1;
+        }
     if (tx_load_bps(p, nch, 0, 3) > TX_BUDGET_BPS) { LOGW("multicast flow refused: over the budget"); return -1; }
     txflow_t *t = &p->tx[f];
     memset(t, 0, sizeof(*t));
